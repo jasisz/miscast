@@ -1,0 +1,6 @@
+work/
+spec/wast/
+__pycache__/
+*.pyc
+.idea/
+.DS_Store
