@@ -16,6 +16,18 @@ ARG_RE = re.compile(r"\((i32|i64)\.const\s+(-?(?:0x[0-9a-fA-F]+|\d+))\)")
 I32RES_RE = re.compile(r"\(i32\.const\s+(-?(?:0x[0-9a-fA-F]+|\d+))\)")
 _SIG = r"\s*((?:\((?:param|result)[^()]*\)\s*)*)"
 
+# Persistent-state mutators (NOT local.*, which is function-local): a run-segment with more than
+# one action and any of these may carry state from one invoke to the next, so a one-shot engine
+# (fresh instance per call) can't replicate it faithfully.
+MUTATOR = re.compile(r"\b(?:global\.set|table\.(?:set|fill|copy|init|grow)|elem\.drop|data\.drop|"
+                     r"memory\.(?:fill|copy|init|grow)|(?:i32|i64|f32|f64|v128)\.store\w*)\b")
+
+
+def _assert_reason(form):
+    """The trailing expected-failure string of an assert_invalid / assert_malformed form."""
+    m = re.findall(r'"((?:[^"\\]|\\.)*)"', form)
+    return m[-1] if m else ""
+
 
 def _sig_results(module, export):
     m = re.search(r'\(func\s+\(export\s+"%s"\)%s' % (re.escape(export), _SIG), module)
@@ -50,8 +62,8 @@ def strip_comments(t):
     return re.sub(r";;[^\n]*", "", t)
 
 
-def top_forms(text):
-    """Yield each top-level (...) s-expression, string- and comment-aware."""
+def top_forms_pos(text):
+    """Yield (form, start_offset) for each top-level (...) s-expression, string- and comment-aware."""
     forms, depth, start, instr, i = [], 0, None, False, 0
     while i < len(text):
         c = text[i]
@@ -69,9 +81,14 @@ def top_forms(text):
         elif c == ")":
             depth -= 1
             if depth == 0 and start is not None:
-                forms.append(text[start:i + 1]); start = None
+                forms.append((text[start:i + 1], start)); start = None
         i += 1
     return forms
+
+
+def top_forms(text):
+    """Yield each top-level (...) s-expression, string- and comment-aware."""
+    return [f for f, _ in top_forms_pos(text)]
 
 
 def find_subform(text, head):
@@ -142,6 +159,106 @@ def parse_wast(text, prefix):
             name, args = pi; idx += 1
             cases.append((f"{prefix}:{name}#{idx}", cur, name, args, None, result_type(cur, name)))
     return cases, stats
+
+
+def parse_script(text, prefix):
+    """Parse a .wast into an ordered list of SEGMENTS — the faithful command stream.
+
+    A segment is a dict:
+      name      : "<prefix>#k" identifier
+      module    : the (module ...) wat text
+      kind      : "run"     — instantiate, then run `actions` in order on ONE instance (state persists)
+                  "invalid" — an ill-typed module a conformant engine must REJECT at validation
+      reason    : expected-failure substring (kind=invalid)
+      stateful  : True if actions may depend on state a prior action set up (one-shot engines can't replicate)
+      actions   : ordered [{export, args, expected, rtype}], empty for kind=invalid
+    Multi-module linking (register / (invoke $m ...)), binary/quote modules and assert_malformed
+    are not modeled yet and counted under skip/malformed."""
+    text = strip_comments(text)
+    segs, stats, seg, k = [], {"modules": 0, "invalid": 0, "malformed": 0, "skip": 0}, None, 0
+
+    def flush():
+        nonlocal seg
+        if seg is not None:
+            segs.append(seg)
+            seg = None
+
+    for form, _ in top_forms_pos(text):
+        if form.startswith("(module"):
+            flush()
+            if form.startswith(("(module binary", "(module quote")):
+                stats["skip"] += 1
+                continue
+            k += 1
+            stats["modules"] += 1
+            seg = {"name": f"{prefix}#{k}", "module": form, "kind": "run",
+                   "reason": "", "stateful": False, "actions": []}
+        elif form.startswith("(assert_invalid"):
+            flush()
+            inner = find_subform(form, "module")
+            if inner is None or inner.startswith(("(module binary", "(module quote")):
+                stats["skip"] += 1
+                continue
+            k += 1
+            stats["invalid"] += 1
+            segs.append({"name": f"{prefix}:invalid#{k}", "module": inner, "kind": "invalid",
+                         "reason": _assert_reason(form), "stateful": False, "actions": []})
+        elif form.startswith("(assert_malformed"):
+            stats["malformed"] += 1                       # parser-level, not modeled yet
+        elif form.startswith("(register"):
+            stats["skip"] += 1                            # multi-module linking not modeled
+        elif form.startswith(("(assert_return", "(assert_trap")):
+            inv = find_subform(form, "invoke")
+            pi = parse_invoke(inv) if inv else None
+            if seg is None or pi is None:
+                stats["skip"] += 1
+                continue
+            name, args = pi
+            if form.startswith("(assert_trap"):
+                expected = "TRAP"
+            else:
+                mres = I32RES_RE.search(form[form.find(inv) + len(inv):])
+                expected = ("OK " + u32(mres.group(1))) if mres else "RET"
+            seg["actions"].append({"export": name, "args": args, "expected": expected,
+                                   "rtype": result_type(seg["module"], name), "raw": form})
+        elif form.startswith("(invoke"):
+            pi = parse_invoke(form)
+            if seg is None or pi is None:
+                stats["skip"] += 1
+                continue
+            name, args = pi
+            seg["actions"].append({"export": name, "args": args, "expected": None,
+                                   "rtype": result_type(seg["module"], name), "raw": form})
+    flush()
+    for s in segs:
+        if s["kind"] == "run" and len(s["actions"]) > 1 and MUTATOR.search(s["module"]):
+            s["stateful"] = True
+    return segs, stats
+
+
+def load_script_corpus(d):
+    """Load every .wast / .wat in `d` as an ordered segment list + aggregate stats."""
+    segs, stats = [], {"files": 0, "modules": 0, "invalid": 0, "malformed": 0, "skip": 0,
+                       "actions": 0, "stateful": 0}
+    for f in sorted(glob.glob(os.path.join(d, "*.wast"))) + sorted(glob.glob(os.path.join(d, "*.wat"))):
+        stats["files"] += 1
+        txt, base = open(f).read(), os.path.splitext(os.path.basename(f))[0]
+        if f.endswith(".wast"):
+            ss, st = parse_script(txt, base)
+            for s in ss:
+                s["src"] = f
+            segs += ss
+            for key in ("modules", "invalid", "malformed", "skip"):
+                stats[key] += st[key]
+        else:
+            segs.append({"name": base, "src": f, "module": txt, "kind": "run", "reason": "",
+                         "stateful": False, "actions": [{"export": "f", "args": [], "expected": None,
+                                                         "rtype": result_type(txt, "f"), "raw": ""}]})
+            stats["modules"] += 1
+    for s in segs:
+        stats["actions"] += len(s["actions"])
+        stats["stateful"] += bool(s["stateful"])
+    return segs, stats
 
 
 def load_corpus(d):

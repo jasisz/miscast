@@ -5,9 +5,9 @@ each case on several engines: V8, wasmtime, and the WebAssembly **reference
 interpreter**. The reference interpreter is treated as the spec oracle when
 available; V8 and wasmtime add production-engine corroboration. A divergence is
 reported only when the selected oracles **agree** — above all a **SOUNDNESS**
-divergence, where the system-under-test runs something every oracle traps on. The
-spec authors already wrote the hard ill-typed cases; curated hand-seeds cover the
-corners the testsuite misses.
+divergence, where the system-under-test runs something every oracle traps on, or
+accepts a module every oracle rejects. The spec authors already wrote the hard
+ill-typed cases; curated hand-seeds cover the corners the testsuite misses.
 
 *The name:* it catches an interpreter that **mis-casts** — runs ill-typed code (a
 botched subtype/cast check) a conformant engine would reject.
@@ -19,15 +19,29 @@ python3 -m miscast --sut ENGINE [--oracles LIST] [--mode replay|mutate|smith] [-
 **No third-party dependencies** — only the Python standard library, plus the
 external CLI tools `wasm-tools`, `node` (≥22, for the V8 oracle) and `wasmtime`.
 Run from the repo root. The code is a small package (`miscast/`): `config` /
-`toolchain` / `engines` / `verdict` / `runner` / `mutate` / `wast` / `modes` / `cli`.
+`toolchain` / `engines` / `verdict` / `runner` / `mutate` / `wast` / `modes` /
+`repro` / `cli`.
 
 ## Native input: `.wast`
 
 `.wast` is the official wasm script format: a module plus how to exercise it —
-`(assert_return (invoke "fn" args) result)` / `(assert_trap (invoke "fn") "...")`.
-Because the assert is the **spec author's own expected result**, for an unmutated
-case it acts as a **third oracle** (conformance) alongside V8 and wasmtime. A bare
-`.wat` is accepted too — treated as one module exercised by `(invoke "f")`.
+`(assert_return (invoke "fn" args) result)`, `(assert_trap (invoke "fn") "...")`,
+`(assert_invalid (module ...) "...")`. `replay` parses each file into its **ordered
+command stream** and runs three differential sections over it:
+
+- **execution** — per-action value / trap differential. Independent actions run on
+  every engine and their results are compared; the assert is the spec author's own
+  expected result, a corroborating oracle.
+- **validation** — `assert_invalid`: a module the spec marks ill-typed. Every oracle
+  must **reject** it; a SUT that accepts (or runs) it is unsound — the direction a
+  value/trap differential structurally can't see.
+- **conformance** — a file with **stateful** segments (several invokes that mutate
+  global / table / memory state) is run as the *whole real* `.wast` file, natively and
+  in order on the reference interpreter (`wasm file.wast`), state preserved — not
+  shredded into fresh-per-invoke cases. A SUT that can execute a `.wast` script
+  (`CUSTOM_WAST_CMD`) is compared against it.
+
+A bare `.wat` is accepted too — treated as one module exercised by `(invoke "f")`.
 
 So the tool consumes two corpora in the same format:
 - **`seeds/`** — our hand-written `.wat` probes, one subtyping corner each.
@@ -40,7 +54,7 @@ So the tool consumes two corpora in the same format:
 | engine     | how                                                                   |
 |------------|-----------------------------------------------------------------------|
 | `v8`       | Node ≥22 (WasmGC) + bundled `oracle/v8.js`                            |
-| `wasmtime` | `wasmtime run --invoke <fn>`                                          |
+| `wasmtime` | `wasmtime run --invoke` (execution) · `wasmtime wast` (conformance) · `wasmtime compile` (validation) |
 | `spec`     | the WebAssembly **reference interpreter** (the spec oracle), via env `SPEC_WASM=/path/to/wasm` |
 | `custom`   | **your** interpreter, via env `CUSTOM_CMD="cmd {wat} {wasm} {export}"` — no code change |
 
@@ -63,7 +77,7 @@ but flagged only with `--overtrap`.
 
 | mode     | what it does                                                                   |
 |----------|--------------------------------------------------------------------------------|
-| `replay` | run each case as-is — the assert joins V8+wasmtime as an oracle (conformance + differential) |
+| `replay` | run the file's command stream — three sections: **execution** (value/trap differential, assert as oracle), **validation** (`assert_invalid`), **conformance** (stateful scripts run natively, state preserved) |
 | `mutate` | re-point a type slot in each module (`call_indirect` / `call_ref` / `array.*` / `struct.*` / `ref.test` / `ref.cast` / `br_on_cast`) at every declared **and** abstract type, sweeping the subtyping matrix — the assert no longer applies, so this is differential-only |
 | `smith`  | random valid GC modules via `wasm-tools smith` — breadth baseline / drop-in    |
 
@@ -111,20 +125,29 @@ subtyping soundness).
 ## Honest limits
 
 - A **reference** or void result prints differently per engine, so those cases are
-  compared by **status only** (trap vs return), not by value — value comparison
-  runs only when every engine returns a plain integer. This keeps the soundness
-  and i32-value classes precise without false value-divergences on refs.
-- **Stateful** multi-invoke tests run each invoke on a **fresh instance**, so a
-  test whose result depends on state a prior invoke set up (e.g. a populated
-  table) is not replicated. The production engines are ground truth; the `.wast`
-  assert is only a **fallback** oracle (used when no live engine can run the case)
-  and a corroboration column — it never overrides engine consensus. Running each
-  module's invoke sequence on one persistent instance is the way to cover these.
-- `smith` is random (counts vary run-to-run) and finds shallow over-traps, never
-  the subtyping soundness class.
-- **Validation-differential** (does the SUT *reject* the spec's `assert_invalid`
-  modules?) is not yet implemented — it needs the SUT to expose a validate/load
-  step separate from invoke. Those cases are reported as `validation-only not run`.
+  compared by **status only** (trap vs return), not by value — value comparison runs
+  only when every engine returns a plain integer/float. This keeps the soundness and
+  value classes precise without false divergences on refs.
+- **Stateful** segments are run as the whole real `.wast` file, natively and in order
+  on the reference interpreter, so state is preserved. (wasmtime's `wast` runner
+  string-matches `assert_invalid` reason text and so fails official files merely for
+  phrasing an error differently — too noisy to be a conformance oracle; V8 has no
+  native `.wast` runner.) A one-shot SUT (an invoke-only runner) cannot execute a
+  stateful script at all; those are reported `sut-stateful-na` — never run on a fresh
+  instance and passed off as faithful. A SUT that *can* run a `.wast` script is wired
+  via `CUSTOM_WAST_CMD="cmd {wast}"`.
+- **Validation-differential** (`assert_invalid`) is implemented: every oracle
+  (wasm-tools, the reference interpreter, wasmtime, V8) must reject the module. A SUT
+  that exposes a real validate step is tested fully via `CUSTOM_VALIDATE_CMD`. An
+  invoke-only SUT is tested where its interface allows — an invalid module that
+  exports a runnable function is decisive (the SUT returns a value = accepted-and-ran =
+  unsound); an exportless validator test, which a one-shot runner can't be driven on,
+  is reported `sut-unsup`, never a false finding.
+- `assert_malformed` (parser-level) and multi-module linking (`register`) are not
+  modeled yet, and float/ref/v128 **arguments** can't be passed through a CLI invoke,
+  so those actions are skipped (counted in the header).
+- `smith` is random (counts vary run-to-run) and finds shallow over-traps, never the
+  subtyping soundness class.
 
 ## Config (env, auto-detected otherwise)
 
@@ -134,5 +157,9 @@ subtyping soundness).
 | `NODE`       | newest WasmGC-capable node (≥22) on PATH or in `~/.nvm`          |
 | `SPEC_WASM`  | unset — path to the WebAssembly reference interpreter (`spec` oracle) |
 | `CUSTOM_CMD` | unset — wire the interpreter under test as the `custom` engine    |
+| `CUSTOM_VALIDATE_CMD` | unset — optional `cmd {wat} {wasm}` exposing the SUT's validate/load step (rc 0 = accepted) for full validation-differential coverage |
+| `CUSTOM_WAST_CMD` | unset — optional `cmd {wast}` if the SUT can run a whole `.wast` script (rc 0 = conformant), for stateful conformance |
 
-Divergences are also written to `work/divergences.txt`.
+Findings are written to `work/divergences.txt`, with a self-contained reproducer per
+finding under `work/repro/<case>/` (module, a runnable `case.wast`, and the exact
+command each engine ran).

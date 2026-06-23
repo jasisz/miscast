@@ -1,5 +1,6 @@
 // V8 reference oracle: instantiate a wasm module and invoke an export.
 //   node v8.js <module.wasm> [export=f] [args...]
+//   node v8.js <module.wasm> __validate__      -> "=> VALID" | "=> INVALID" (validation-differential)
 // args ending in `n` are passed as BigInt (i64). Needs Node >= 22 (WasmGC).
 // Output: "<file> => OK <val>" (val "_" for a void return) | "=> TRAP (...)"
 //         | "=> NOEXPORT" | "=> INSTANTIATE-FAIL: ...".
@@ -9,6 +10,10 @@ const fs = require('fs');
   const exp = process.argv[3] || 'f';
   const args = process.argv.slice(4).map(s => /n$/.test(s) ? BigInt(s.slice(0, -1)) : Number(s));
   const tag = p.split('/').pop();
+  if (exp === '__validate__') {            // does V8 reject this module at validation?
+    console.log(tag + (WebAssembly.validate(fs.readFileSync(p)) ? " => VALID" : " => INVALID"));
+    return;
+  }
   try {
     const { instance } = await WebAssembly.instantiate(fs.readFileSync(p), {});
     const fn = instance.exports[exp];

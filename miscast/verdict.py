@@ -43,6 +43,38 @@ def _fkey(v):
         return None
 
 
+def classify_validation(verdicts, sut):
+    """Validation-differential: every oracle REJECTs an invalid module; the SUT must too.
+    SUT ACCEPT where the oracles agree REJECT = the module ran/loaded unsound."""
+    ss = verdicts.get(sut)
+    oracles = [v for e, v in verdicts.items() if e != sut and v in ("REJECT", "ACCEPT")]
+    if not oracles:
+        return "oracle-unsup", False
+    if any(v == "ACCEPT" for v in oracles):
+        return "oracle-split", False                # an oracle thinks it's valid -> confounder
+    if ss == "ACCEPT":
+        return "SOUNDNESS", True                     # SUT accepted/ran a module every oracle rejects
+    if ss == "REJECT":
+        return "agree", False
+    return "sut-unsup", False
+
+
+def classify_conformance(verdicts, sut):
+    """Stateful .wast conformance: the oracles run the real script and agree it PASSes its own
+    asserts; the SUT must too. SUT FAIL where oracles PASS = a stateful-execution divergence."""
+    ss = verdicts.get(sut, "n/a")
+    oracles = [v for e, v in verdicts.items() if e != sut and v in ("PASS", "FAIL")]
+    if not oracles:
+        return "oracle-unsup", False
+    if any(v == "FAIL" for v in oracles):
+        return "oracle-split", False                # oracles disagree with the .wast's own asserts
+    if ss == "FAIL":
+        return "SOUNDNESS", True
+    if ss == "PASS":
+        return "agree", False
+    return "sut-stateful-na", False                  # one-shot SUT can't execute a stateful script
+
+
 def classify(verdicts, sut, expected, rtype="int"):
     if sut not in verdicts:
         return "no-sut", False

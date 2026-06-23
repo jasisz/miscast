@@ -1,4 +1,11 @@
-"""Command-line entry point: parse args, run the corpus, print the table + summary."""
+"""Command-line entry point: parse args, run the corpus, print the tables + summary.
+
+replay runs three differential sections over the faithful .wast command stream:
+  execution    per-action value/trap differential (non-stateful run-segment actions)
+  validation   assert_invalid — does the SUT REJECT a module the spec marks invalid?
+  conformance  stateful .wast run natively (spec + wasmtime), state preserved
+mutate / smith construct or generate modules and run the execution section only.
+"""
 import argparse
 import os
 import sys
@@ -8,22 +15,26 @@ from concurrent.futures import ThreadPoolExecutor
 from .config import SEEDS_DEFAULT, WORK, tool_versions
 from .engines import ENGINES, ENGINE_ORDER
 from .modes import MODES
-from .wast import load_corpus
-from .runner import differential
+from .wast import load_corpus, load_script_corpus
+from .runner import differential, validation_differential, conformance_differential
 from .repro import write_repro
 
 # Verdict -> severity class, in report order. The class names ARE the headline taxonomy.
 SEVERITY = {
-    "SOUNDNESS":    "SOUNDNESS",      # SUT runs what every oracle traps/rejects — the dangerous class
-    "VALUE":        "VALUE",          # SUT returns a different value than the oracles agree on
-    "completeness": "OVER_TRAP",      # SUT traps where the oracles run (its own limitation)
-    "sut-reject":   "OVER_REJECT",    # SUT errors/refuses where the oracles run (over-rejection)
-    "oracle-split": "ORACLE_SPLIT",   # the oracles disagree — a confounder, never a finding
-    "oracle-unsup": "ORACLE_UNSUP",   # no oracle could run the case
+    "SOUNDNESS":     "SOUNDNESS",     # SUT runs/accepts what every oracle traps/rejects — the dangerous class
+    "VALUE":         "VALUE",         # SUT returns a different value than the oracles agree on
+    "completeness":  "OVER_TRAP",     # SUT traps where the oracles run (its own limitation)
+    "sut-reject":    "OVER_REJECT",   # SUT errors/refuses where the oracles run (over-rejection)
+    "oracle-split":  "ORACLE_SPLIT",  # the oracles disagree — a confounder, never a finding
+    "oracle-unsup":  "ORACLE_UNSUP",  # no oracle could run the case
+    "sut-unsup":     "SUT_UNSUP",     # SUT couldn't be probed (e.g. invalid module with no export)
+    "sut-stateful-na": "SUT_NA",      # one-shot SUT can't execute a stateful script
     "assemble-fail": "HARNESS",       # wasm-tools could not assemble the module
-    "invalid":      "HARNESS",        # module is invalid (validation-differential territory)
-    "agree":        "AGREE",
+    "invalid":       "HARNESS",       # module is invalid in the execution section (handled by validation)
+    "agree":         "AGREE",
 }
+CLASS_ORDER = ("SOUNDNESS", "VALUE", "OVER_TRAP", "OVER_REJECT", "ORACLE_SPLIT",
+               "ORACLE_UNSUP", "SUT_UNSUP", "SUT_NA", "HARNESS", "AGREE")
 
 
 def main():
@@ -54,41 +65,78 @@ def main():
             sys.exit(f"engines not available: {', '.join(missing)}; detected: {', '.join(ENGINES)}")
         engines = {e: ENGINES[e] for e in want}
         engines[args.sut] = ENGINES[args.sut]
-    cols = [e for e in ENGINE_ORDER if e in engines and e != args.sut] + [args.sut]
-
-    cases, stats = load_corpus(args.seeds)
-    work, untested = MODES[args.mode](cases, args.n)
-    print(f"# mode={args.mode}  files={stats['files']}  modules={stats['modules']}  "
-          f"cases={len(work)}  (validation-only not run={stats['invalid']}, unrunnable={stats['skip']})")
-    print(f"# engines={'+'.join(cols)}  sut={args.sut}  jobs={args.jobs}")
-    print(f"# tools={tool_versions(engines)}")
-    print(f"\n{'case':44} " + " ".join(f"{c:11}" for c in cols) + f" {'assert':8} verdict")
-    print("-" * (46 + 12 * len(cols) + 20))
-    with ThreadPoolExecutor(max_workers=args.jobs) as ex:
-        results = list(ex.map(lambda c: differential(c, args.sut, engines), work))
+    sut = args.sut
+    base_cols = [e for e in ENGINE_ORDER if e in engines and e != sut] + [sut]
 
     classes = Counter()
     log, repro_dirs = [], []
-    for nm, verdicts, expected, verdict, isdiv, repro in results:
-        cls = SEVERITY.get(verdict, verdict)
-        classes[cls] += 1
-        if verdict in ("assemble-fail", "invalid"):
-            continue
-        counted = isdiv and (args.overtrap or verdict not in ("completeness", "sut-reject"))
-        row = " ".join(f"{verdicts.get(c, '-'):11}" for c in cols)
-        print(f"{nm:44} {row} {(expected or '-'):8} {verdict}{'   <<<' if counted else ''}")
-        if counted:
-            log.append(f"{nm}: {verdicts} assert={expected} [{verdict}]")
-            repro_dirs.append(write_repro(nm, repro, verdicts, expected, cols))
 
-    print("-" * (46 + 12 * len(cols) + 20))
+    def section(title, results, cols):
+        """Print one differential section; tally severity; collect findings + reproducers."""
+        print(f"\n## {title}")
+        print(f"{'case':44} " + " ".join(f"{c:11}" for c in cols) + f" {'assert':8} verdict")
+        print("-" * (46 + 12 * len(cols) + 20))
+        for nm, verdicts, expected, verdict, isfind, repro in results:
+            classes[SEVERITY.get(verdict, verdict)] += 1
+            if verdict in ("assemble-fail",):
+                continue
+            counted = isfind and (args.overtrap or verdict not in ("completeness", "sut-reject"))
+            row = " ".join(f"{verdicts.get(c, '-'):11}" for c in cols)
+            print(f"{nm:44} {row} {(expected or '-'):8} {verdict}{'   <<<' if counted else ''}")
+            if counted:
+                log.append(f"[{title}] {nm}: {verdicts} -> {verdict}")
+                repro_dirs.append(write_repro(nm, repro, verdicts, expected, cols))
+
+    def pool(fn, items):
+        with ThreadPoolExecutor(max_workers=args.jobs) as ex:
+            return list(ex.map(fn, items))
+
+    if args.mode == "replay":
+        segs, stats = load_script_corpus(args.seeds)
+        action_cases, invalid_segs, stateful_files = [], [], {}
+        nstateful = 0
+        for s in segs:
+            if s["kind"] == "invalid":
+                invalid_segs.append(s)
+            elif s["stateful"]:
+                nstateful += 1
+                stateful_files[s["src"]] = stateful_files.get(s["src"], 0) + 1
+            else:
+                for a in s["actions"]:
+                    action_cases.append((f"{s['name']}:{a['export']}", s["module"],
+                                         a["export"], a["args"], a["expected"], a["rtype"]))
+        stateful_groups = [{"name": os.path.basename(src), "src": src, "nstateful": n}
+                           for src, n in sorted(stateful_files.items())]
+        print(f"# mode=replay  files={stats['files']}  modules={stats['modules']}  "
+              f"actions={len(action_cases)}  invalid={len(invalid_segs)}  "
+              f"stateful={nstateful} in {len(stateful_groups)} file(s)  "
+              f"(malformed not run={stats['malformed']}, unrunnable={stats['skip']})")
+        print(f"# engines={'+'.join(base_cols)}  sut={sut}  jobs={args.jobs}")
+        print(f"# tools={tool_versions(engines)}")
+        section("execution — per-action value / trap differential",
+                pool(lambda c: differential(c, sut, engines), action_cases), base_cols)
+        if invalid_segs:
+            section("validation — assert_invalid (does the SUT reject an ill-typed module?)",
+                    pool(lambda s: validation_differential(s, sut, engines), invalid_segs),
+                    ["wtools"] + base_cols)
+        if stateful_groups:
+            section("conformance — whole stateful .wast files run natively on the reference interpreter",
+                    pool(lambda g: conformance_differential(g, sut, engines), stateful_groups), base_cols)
+    else:
+        cases, stats = load_corpus(args.seeds)
+        work, untested = MODES[args.mode](cases, args.n)
+        print(f"# mode={args.mode}  files={stats['files']}  modules={stats['modules']}  cases={len(work)}")
+        print(f"# engines={'+'.join(base_cols)}  sut={sut}  jobs={args.jobs}")
+        print(f"# tools={tool_versions(engines)}")
+        section("execution — per-action value / trap differential",
+                pool(lambda c: differential(c, sut, engines), work), base_cols)
+        if untested:
+            print(f"\n!! mutate: {len(untested)} module(s) had no sweepable op")
+
     findings = classes["SOUNDNESS"] + classes["VALUE"]
+    print("\n" + "=" * 70)
     print(f"FINDINGS={findings}  SOUNDNESS={classes['SOUNDNESS']}  VALUE={classes['VALUE']}")
-    print("  by class: " + "  ".join(f"{k}={classes[k]}" for k in
-          ("SOUNDNESS", "VALUE", "OVER_TRAP", "OVER_REJECT", "ORACLE_SPLIT", "ORACLE_UNSUP", "HARNESS", "AGREE")
-          if classes[k]))
-    if untested:
-        print(f"!! mutate: {len(untested)} module(s) had no sweepable op")
+    print("  by class: " + "  ".join(f"{k}={classes[k]}" for k in CLASS_ORDER if classes[k]))
     if log:
         with open(os.path.join(WORK, "divergences.txt"), "w") as f:
             f.write("\n".join(log) + "\n")
