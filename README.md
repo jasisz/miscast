@@ -61,7 +61,8 @@ So the tool consumes two corpora in the same format:
 `--sut` is required — there is no privileged default engine; you say what is under
 test. The oracles (the assert + the other engines) must **agree** before a
 divergence is blamed on the SUT; disagreement → `oracle-split`, a confounder,
-never a finding. A SOUNDNESS verdict means the SUT runs while *every* oracle traps.
+never a finding. A SOUNDNESS verdict means the SUT runs while *every* oracle traps,
+or accepts a module *every* oracle rejects.
 
 By default every other detected engine is an oracle; `--oracles v8` restricts to a
 chosen subset (the SUT is always run alongside) — so you pick *which* oracles and

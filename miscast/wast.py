@@ -246,7 +246,7 @@ def load_script_corpus(d):
         if f.endswith(".wast"):
             ss, st = parse_script(txt, base)
             for s in ss:
-                s["src"] = f
+                s["src"] = os.path.abspath(f)         # conformance runs `wasm <src>` regardless of cwd
             segs += ss
             for key in ("modules", "invalid", "malformed", "skip"):
                 stats[key] += st[key]
