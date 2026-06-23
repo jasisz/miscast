@@ -36,3 +36,21 @@ def find_node():
 ORACLE = os.environ.get("V8_ORACLE") or os.path.join(PKG, "oracle", "v8.js")
 NODE = os.environ.get("NODE") or find_node()
 SPEC_WASM = os.environ.get("SPEC_WASM")          # path to the WebAssembly reference interpreter `wasm` binary
+
+
+def tool_versions(engine_names):
+    """One-line provenance — toolchain + engine versions actually used — so a report is reproducible."""
+    def first_line(cmd):
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True).stdout.splitlines()[0].strip()
+        except Exception:
+            return "?"
+    out = ["wasm-tools=" + first_line(["wasm-tools", "--version"]).split()[-1]]
+    if "v8" in engine_names and NODE:
+        out.append("node=" + first_line([NODE, "--version"]))
+    if "wasmtime" in engine_names:
+        wt = first_line(["wasmtime", "--version"]).split()    # "wasmtime 43.0.0 (hash date)"
+        out.append("wasmtime=" + (wt[1] if len(wt) > 1 else "?"))
+    if "spec" in engine_names and SPEC_WASM:
+        out.append("ref-interp")
+    return "  ".join(out)

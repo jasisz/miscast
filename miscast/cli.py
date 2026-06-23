@@ -2,18 +2,33 @@
 import argparse
 import os
 import sys
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
-from .config import SEEDS_DEFAULT, WORK
+from .config import SEEDS_DEFAULT, WORK, tool_versions
 from .engines import ENGINES, ENGINE_ORDER
 from .modes import MODES
 from .wast import load_corpus
 from .runner import differential
+from .repro import write_repro
+
+# Verdict -> severity class, in report order. The class names ARE the headline taxonomy.
+SEVERITY = {
+    "SOUNDNESS":    "SOUNDNESS",      # SUT runs what every oracle traps/rejects — the dangerous class
+    "VALUE":        "VALUE",          # SUT returns a different value than the oracles agree on
+    "completeness": "OVER_TRAP",      # SUT traps where the oracles run (its own limitation)
+    "sut-reject":   "OVER_REJECT",    # SUT errors/refuses where the oracles run (over-rejection)
+    "oracle-split": "ORACLE_SPLIT",   # the oracles disagree — a confounder, never a finding
+    "oracle-unsup": "ORACLE_UNSUP",   # no oracle could run the case
+    "assemble-fail": "HARNESS",       # wasm-tools could not assemble the module
+    "invalid":      "HARNESS",        # module is invalid (validation-differential territory)
+    "agree":        "AGREE",
+}
 
 
 def main():
     ap = argparse.ArgumentParser(prog="miscast",
-                                 description="a .wast-native differential soundness tester for wasm interpreters")
+                                 description="a .wast-native differential tester for WebAssembly GC subtype soundness")
     ap.add_argument("--mode", choices=MODES, default="replay")
     ap.add_argument("--seeds", default=SEEDS_DEFAULT, help="dir of .wast / .wat corpus")
     ap.add_argument("--sut", required=True, help="engine under test (e.g. wasmtime, custom); the rest are oracles")
@@ -28,7 +43,7 @@ def main():
     args = ap.parse_args()
 
     if not ENGINES:
-        sys.exit("no engines detected (need node+oracle, wasmtime, or SPEC_CMD/CUSTOM_CMD)")
+        sys.exit("no engines detected (need node+oracle, wasmtime, or SPEC_WASM/CUSTOM_CMD)")
     if args.sut not in ENGINES:
         sys.exit(f"--sut {args.sut} not available; detected: {', '.join(ENGINES) or '(none)'}")
     engines = dict(ENGINES)
@@ -46,31 +61,36 @@ def main():
     print(f"# mode={args.mode}  files={stats['files']}  modules={stats['modules']}  "
           f"cases={len(work)}  (validation-only not run={stats['invalid']}, unrunnable={stats['skip']})")
     print(f"# engines={'+'.join(cols)}  sut={args.sut}  jobs={args.jobs}")
+    print(f"# tools={tool_versions(engines)}")
     print(f"\n{'case':44} " + " ".join(f"{c:11}" for c in cols) + f" {'assert':8} verdict")
     print("-" * (46 + 12 * len(cols) + 20))
     with ThreadPoolExecutor(max_workers=args.jobs) as ex:
         results = list(ex.map(lambda c: differential(c, args.sut, engines), work))
-    ndiv = nsound = nover = nskip = 0
-    log = []
-    for nm, verdicts, expected, verdict, isdiv in results:
+
+    classes = Counter()
+    log, repro_dirs = [], []
+    for nm, verdicts, expected, verdict, isdiv, repro in results:
+        cls = SEVERITY.get(verdict, verdict)
+        classes[cls] += 1
         if verdict in ("assemble-fail", "invalid"):
-            nskip += 1
             continue
         counted = isdiv and (args.overtrap or verdict not in ("completeness", "sut-reject"))
         row = " ".join(f"{verdicts.get(c, '-'):11}" for c in cols)
         print(f"{nm:44} {row} {(expected or '-'):8} {verdict}{'   <<<' if counted else ''}")
         if counted:
-            ndiv += 1
-            nsound += verdict == "SOUNDNESS"
             log.append(f"{nm}: {verdicts} assert={expected} [{verdict}]")
-        elif verdict in ("completeness", "sut-reject"):
-            nover += 1
-        elif verdict != "agree":
-            nskip += 1
+            repro_dirs.append(write_repro(nm, repro, verdicts, expected, cols))
+
     print("-" * (46 + 12 * len(cols) + 20))
-    print(f"DIVERGENCES={ndiv}  SOUNDNESS={nsound}  over-traps={nover}  skipped={nskip}")
+    findings = classes["SOUNDNESS"] + classes["VALUE"]
+    print(f"FINDINGS={findings}  SOUNDNESS={classes['SOUNDNESS']}  VALUE={classes['VALUE']}")
+    print("  by class: " + "  ".join(f"{k}={classes[k]}" for k in
+          ("SOUNDNESS", "VALUE", "OVER_TRAP", "OVER_REJECT", "ORACLE_SPLIT", "ORACLE_UNSUP", "HARNESS", "AGREE")
+          if classes[k]))
     if untested:
         print(f"!! mutate: {len(untested)} module(s) had no sweepable op")
     if log:
-        open(os.path.join(WORK, "divergences.txt"), "w").write("\n".join(log) + "\n")
-        print(f"# divergences -> {os.path.join(WORK, 'divergences.txt')}")
+        with open(os.path.join(WORK, "divergences.txt"), "w") as f:
+            f.write("\n".join(log) + "\n")
+        print(f"# {len(log)} finding(s) -> {os.path.join(WORK, 'divergences.txt')}")
+        print(f"# reproducers   -> {os.path.join(WORK, 'repro')}/  ({len(repro_dirs)} dir(s))")

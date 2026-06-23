@@ -1,9 +1,11 @@
-# miscast — a `.wast`-native differential soundness tester for wasm interpreters
+# miscast — a `.wast`-native differential tester for WebAssembly GC subtype soundness
 
 Replays the official WebAssembly spec testsuite against any interpreter, running
-each case on several engines: V8, wasmtime, and the spec **reference interpreter**
-as a gold-standard oracle. It flags where they diverge, above all **SOUNDNESS**
-divergences, where the system-under-test runs something the oracles trap on. The
+each case on several engines: V8, wasmtime, and the WebAssembly **reference
+interpreter**. The reference interpreter is treated as the spec oracle when
+available; V8 and wasmtime add production-engine corroboration. A divergence is
+reported only when the selected oracles **agree** — above all a **SOUNDNESS**
+divergence, where the system-under-test runs something every oracle traps on. The
 spec authors already wrote the hard ill-typed cases; curated hand-seeds cover the
 corners the testsuite misses.
 
@@ -29,8 +31,9 @@ case it acts as a **third oracle** (conformance) alongside V8 and wasmtime. A ba
 
 So the tool consumes two corpora in the same format:
 - **`seeds/`** — our hand-written `.wat` probes, one subtyping corner each.
-- **`spec/wast/`** — the official WebAssembly GC testsuite. `./spec/fetch.sh` pulls
-  it (type-subtyping, ref_test, ref_cast, br_on_cast, struct, array, i31, …).
+- **`spec/wast/`** — the official WebAssembly **core** testsuite (~114 files, GC
+  included). `./spec/fetch.sh` pulls it (type-subtyping, ref_test, ref_cast,
+  br_on_cast, struct, array, i31, …).
 
 ## Engines (auto-detected; `--sut` picks the one under test, the rest are oracles)
 
@@ -38,7 +41,7 @@ So the tool consumes two corpora in the same format:
 |------------|-----------------------------------------------------------------------|
 | `v8`       | Node ≥22 (WasmGC) + bundled `oracle/v8.js`                            |
 | `wasmtime` | `wasmtime run --invoke <fn>`                                          |
-| `spec`     | the WebAssembly **reference interpreter** (gold-standard oracle), via env `SPEC_WASM=/path/to/wasm` |
+| `spec`     | the WebAssembly **reference interpreter** (the spec oracle), via env `SPEC_WASM=/path/to/wasm` |
 | `custom`   | **your** interpreter, via env `CUSTOM_CMD="cmd {wat} {wasm} {export}"` — no code change |
 
 `--sut` is required — there is no privileged default engine; you say what is under
@@ -49,7 +52,7 @@ never a finding. A SOUNDNESS verdict means the SUT runs while *every* oracle tra
 By default every other detected engine is an oracle; `--oracles v8` restricts to a
 chosen subset (the SUT is always run alongside) — so you pick *which* oracles and
 *how many* (`--oracles v8` for a quick one-oracle pass, or wire a reference
-interpreter via `SPEC_WASM` and use `--oracles spec` for a gold-standard check).
+interpreter via `SPEC_WASM` and use `--oracles spec` to check against the spec oracle alone).
 
 By default only **soundness** and **value** divergences are counted. A
 *completeness* divergence (the SUT traps where the oracles run) is the SUT's own

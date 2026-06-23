@@ -76,6 +76,24 @@ def be_spec(wat, wasm, export, args):
     return "OK _" if r.returncode == 0 else "UNSUP"
 
 
+def repro_command(engine, wat_path, wasm_path, export, args, wast_path=None):
+    """The exact shell command a given engine ran for this case — so a divergence is reproducible.
+    Mirrors the backends above; `wast_path` is the module+invoke script the `spec` engine needs."""
+    a = [v for _, v in args]
+    if engine == "v8":
+        av = [v + ("n" if t == "i64" else "") for t, v in args]
+        return " ".join([NODE or "node", ORACLE, wasm_path, export] + av)
+    if engine == "wasmtime":
+        return " ".join(["wasmtime", "run", "--invoke", export,
+                         "-W", "function-references=y,gc=y", wasm_path] + a)
+    if engine == "spec":
+        return f"{SPEC_WASM or '$SPEC_WASM'} {wast_path or '<module+invoke>.wast'}"
+    if engine == "custom":
+        tmpl = os.environ.get("CUSTOM_CMD", "$CUSTOM_CMD")
+        return tmpl.format(wat=wat_path, wasm=wasm_path, export=export) + (" " + " ".join(a) if a else "")
+    return "(unknown engine)"
+
+
 def detect_engines():
     eng = {}
     if NODE and os.path.exists(ORACLE):
