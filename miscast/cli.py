@@ -138,22 +138,28 @@ def main():
                     base_cols)
     elif args.mode == "mutate":
         cases, stats = load_corpus(args.seeds)
-        exec_cases, invalid_segs, untested = [], [], 0
+        variants, untested = [], 0
         for name, mod, export, eargs, _exp, rtype in cases:
-            variants = mutate_module(mod)
-            if not variants:
+            vs = mutate_module(mod)
+            if not vs:
                 untested += 1
                 continue
-            for label, vmod in variants:
-                _wp, wsm, valid = prepare(vmod)
-                if wsm is None:
-                    continue                                   # malformed mutation — didn't assemble
-                nm = f"{name}|{label}"
-                if valid:
-                    exec_cases.append((nm, vmod, export, eargs, None, rtype))
-                else:
-                    invalid_segs.append({"name": nm, "module": vmod, "kind": "invalid",
-                                         "reason": "mutated ill-typed", "stateful": False, "actions": []})
+            variants += [(f"{name}|{label}", vmod, export, eargs, rtype) for label, vmod in vs]
+
+        def _route(v):                                         # assemble + validate (parallel) to classify
+            _wp, wsm, valid = prepare(v[1])
+            return v + (wsm, valid)
+        routed = pool("routing (assemble + validate variants)", _route, variants)
+
+        exec_cases, invalid_segs = [], []
+        for nm, vmod, export, eargs, rtype, wsm, valid in routed:
+            if wsm is None:
+                continue                                       # malformed mutation — didn't assemble
+            if valid:
+                exec_cases.append((nm, vmod, export, eargs, None, rtype))
+            else:
+                invalid_segs.append({"name": nm, "module": vmod, "kind": "invalid",
+                                     "reason": "mutated ill-typed", "stateful": False, "actions": []})
         print(f"# mode=mutate  files={stats['files']}  modules={stats['modules']}  "
               f"variants: valid={len(exec_cases)}  ill-typed={len(invalid_segs)}  (no-op seeds={untested})")
         print(f"# engines={'+'.join(base_cols)}  sut={sut}  jobs={args.jobs}")
