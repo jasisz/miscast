@@ -37,6 +37,12 @@ CLASS_ORDER = ("SOUNDNESS", "VALUE", "OVER_TRAP", "OVER_REJECT", "ORACLE_SPLIT",
                "ORACLE_UNSUP", "SUT_UNSUP", "SUT_NA", "HARNESS", "AGREE")
 
 
+def _cell(v, w=11):
+    """Keep the table aligned: a float printed in full (an e+300 literal expands to 300+ digits)
+    would blow a column apart, so truncate the DISPLAY — the full value stays in the reproducer."""
+    return v if len(v) <= w else v[:w - 1] + "…"
+
+
 def main():
     ap = argparse.ArgumentParser(prog="miscast",
                                  description="a .wast-native differential tester for WebAssembly GC subtype soundness")
@@ -81,8 +87,8 @@ def main():
             if verdict in ("assemble-fail",):
                 continue
             counted = isfind and (args.overtrap or verdict not in ("completeness", "sut-reject"))
-            row = " ".join(f"{verdicts.get(c, '-'):11}" for c in cols)
-            print(f"{nm:44} {row} {(expected or '-'):8} {verdict}{'   <<<' if counted else ''}")
+            row = " ".join(f"{_cell(verdicts.get(c, '-')):11}" for c in cols)
+            print(f"{nm:44} {row} {_cell(expected or '-', 8):8} {verdict}{'   <<<' if counted else ''}")
             if counted:
                 log.append(f"[{title}] {nm}: {verdicts} -> {verdict}")
                 repro_dirs.append(write_repro(nm, repro, verdicts, expected, cols))
