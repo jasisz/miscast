@@ -161,6 +161,30 @@ def _single(wat):
                 wrapped = f"(block (result (ref {ty})) {wrapped})"
             out.append((f"block-roundtrip@{ty.lstrip('$')}:{n}", wat[:nm.start()] + wrapped + wat[end:]))
 
+        # ref-identity roundtrips through GC STORAGE (struct field / array element) — the semantic
+        # surface where mature engines actually break (wasmtime's array.init_elem reference-identity
+        # bug lived here). Inject wrapper types holding (ref null any), store the ref and read it back:
+        # value AND identity must survive, so the result is deterministic and the differential catches
+        # any divergence in the engine's GC load/store codegen.
+        if "$__ws" not in wat:
+            mend = re.search(r"\(module(\s+\$\S+)?", wat).end()
+            wrap = (" (type $__ws (struct (field (mut (ref null any)))))"
+                    " (type $__wa (array (mut (ref null any))))")
+
+            def inject(new_expr):
+                b = wat[:nm.start()] + new_expr + wat[end:]
+                return b[:mend] + wrap + b[mend:]
+
+            sg = f"(struct.get $__ws 0 (struct.new $__ws {expr}))"
+            ag = f"(array.get $__wa (array.new_fixed $__wa 1 {expr}) (i32.const 0))"
+            out.append((f"ref-id-struct@{ty.lstrip('$')}", inject(f"(ref.cast (ref {ty}) {sg})")))
+            out.append((f"ref-id-array@{ty.lstrip('$')}", inject(f"(ref.cast (ref {ty}) {ag})")))
+            for n in (3, 8):                                    # deep storage roundtrips
+                e = expr
+                for _ in range(n):
+                    e = f"(struct.get $__ws 0 (struct.new $__ws {e}))"
+                out.append((f"ref-id-deep@{ty.lstrip('$')}:{n}", inject(f"(ref.cast (ref {ty}) {e})")))
+
     return out
 
 
