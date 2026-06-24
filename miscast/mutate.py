@@ -115,4 +115,24 @@ def mutate_module(wat):
             swapped = inner[:sa] + inner[sb:eb] + inner[ea:sb] + inner[sa:ea] + inner[eb:]
             out.append(("reorder-rec", wat[:m.start()] + "(rec" + swapped + ")" + wat[end:]))
 
+    # (4) nullability variance: toggle `null` in each `(ref [null] X)` — probes covariance of refs.
+    for m in re.finditer(r"\(ref\s+(null\s+)?(\$\w+|" + _HT + r")\)", wat):
+        has_null, ty = m.group(1), m.group(2)
+        rep = f"(ref {ty})" if has_null else f"(ref null {ty})"
+        out.append((("drop-null@" if has_null else "add-null@") + ty.lstrip("$"),
+                    wat[:m.start()] + rep + wat[m.end():]))
+
+    # (5) ref-swap: re-point each declared-type `(ref [null] $x)` at every other declared type.
+    for m in re.finditer(r"\(ref\s+(null\s+)?(\$\w+)\)", wat):
+        nullp, cur = m.group(1) or "", m.group(2)
+        for t in declared:
+            if t != cur:
+                out.append((f"ref-swap@{cur.lstrip('$')}->{t.lstrip('$')}",
+                            wat[:m.start()] + f"(ref {nullp}{t})" + wat[m.end():]))
+
+    # (6) final-toggle: add / remove `final` on each sub type — probes the no-subtyping-of-final rule.
+    for m in re.finditer(r"\(sub\s+(final\s+)?", wat):
+        rep = "(sub " if m.group(1) else "(sub final "
+        out.append(("drop-final" if m.group(1) else "add-final", wat[:m.start()] + rep + wat[m.end():]))
+
     return out
