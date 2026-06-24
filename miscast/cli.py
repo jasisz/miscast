@@ -4,7 +4,9 @@ replay runs three differential sections over the faithful .wast command stream:
   execution    per-action value/trap differential (non-stateful run-segment actions)
   validation   assert_invalid — does the SUT REJECT a module the spec marks invalid?
   conformance  stateful .wast run natively (spec + wasmtime), state preserved
-mutate / smith construct or generate modules and run the execution section only.
+mutate breaks a type relationship in each seed, then routes by validity: valid variants to the
+  execution differential, ill-typed variants to the validation differential (does the SUT reject?).
+smith generates random valid modules and runs the execution section.
 """
 import argparse
 import os
@@ -15,6 +17,8 @@ from concurrent.futures import ThreadPoolExecutor
 from .config import SEEDS_DEFAULT, WORK, tool_versions
 from .engines import ENGINES, ENGINE_ORDER
 from .modes import MODES
+from .mutate import mutate_module
+from .toolchain import prepare
 from .wast import load_corpus, load_script_corpus
 from .runner import differential, validation_differential, conformance_differential
 from .repro import write_repro
@@ -132,6 +136,35 @@ def main():
             section("conformance — whole stateful .wast files run natively on the reference interpreter",
                     pool("conformance", lambda g: conformance_differential(g, sut, engines), stateful_groups),
                     base_cols)
+    elif args.mode == "mutate":
+        cases, stats = load_corpus(args.seeds)
+        exec_cases, invalid_segs, untested = [], [], 0
+        for name, mod, export, eargs, _exp, rtype in cases:
+            variants = mutate_module(mod)
+            if not variants:
+                untested += 1
+                continue
+            for label, vmod in variants:
+                _wp, wsm, valid = prepare(vmod)
+                if wsm is None:
+                    continue                                   # malformed mutation — didn't assemble
+                nm = f"{name}|{label}"
+                if valid:
+                    exec_cases.append((nm, vmod, export, eargs, None, rtype))
+                else:
+                    invalid_segs.append({"name": nm, "module": vmod, "kind": "invalid",
+                                         "reason": "mutated ill-typed", "stateful": False, "actions": []})
+        print(f"# mode=mutate  files={stats['files']}  modules={stats['modules']}  "
+              f"variants: valid={len(exec_cases)}  ill-typed={len(invalid_segs)}  (no-op seeds={untested})")
+        print(f"# engines={'+'.join(base_cols)}  sut={sut}  jobs={args.jobs}")
+        print(f"# tools={tool_versions(engines)}", flush=True)
+        if exec_cases:
+            section("execution — mutated VALID variants (value / trap differential)",
+                    pool("execution", lambda c: differential(c, sut, engines), exec_cases), base_cols)
+        if invalid_segs:
+            section("validation — mutated ILL-TYPED variants: does the SUT reject them?",
+                    pool("validation", lambda s: validation_differential(s, sut, engines), invalid_segs),
+                    ["wtools"] + base_cols)
     else:
         cases, stats = load_corpus(args.seeds)
         work, untested = MODES[args.mode](cases, args.n)
@@ -140,8 +173,6 @@ def main():
         print(f"# tools={tool_versions(engines)}", flush=True)
         section("execution — per-action value / trap differential",
                 pool("execution", lambda c: differential(c, sut, engines), work), base_cols)
-        if untested:
-            print(f"\n!! mutate: {len(untested)} module(s) had no sweepable op")
 
     findings = classes["SOUNDNESS"] + classes["VALUE"]
     print("\n" + "=" * 70)
