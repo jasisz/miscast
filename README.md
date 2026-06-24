@@ -81,7 +81,7 @@ but flagged only with `--overtrap`.
 | mode     | what it does                                                                   |
 |----------|--------------------------------------------------------------------------------|
 | `replay` | run the file's command stream — three sections: **execution** (value/trap differential, assert as oracle), **validation** (`assert_invalid`), **conformance** (stateful scripts run natively, state preserved) |
-| `mutate` | re-point a type slot in each module (`call_indirect` / `call_ref` / `array.*` / `struct.*` / `ref.test` / `ref.cast` / `br_on_cast`) at every declared **and** abstract type, sweeping the subtyping matrix — the assert no longer applies, so this is differential-only |
+| `mutate` | break a **type relationship** in each seed — re-point an op's type slot, drop / flip a supertype edge, reorder a rec group, toggle ref nullability or `final` — then route each variant by validity: valid ones to the execution differential, **ill-typed ones to the validation differential** (does the SUT *reject* them?). A SUT that accepts a generated ill-typed module is unsound. |
 | `smith`  | random valid GC modules via `wasm-tools smith` — breadth baseline / drop-in    |
 
 ## Two ways the bug shows up
@@ -139,6 +139,24 @@ established standard (no GC) and hunts crashes, not type-soundness. miscast is a
 **complement, not a replacement** for broad coverage-guided fuzzing: that finds a
 huge range of bugs across the instruction set; this targets one corner (GC
 subtyping soundness).
+
+## Found in the wild
+
+Each verified against the reference interpreter as ground truth, on the latest engine version:
+
+- **WasmEdge** — its validator accepts a module with a forward supertype reference (a `sub` type
+  whose supertype has a larger type index), which the spec rejects. Found by the `mutate`
+  type-graph generator (`reorder-rec`), **not** the corpus — this module isn't in the testsuite.
+  Live in 0.17.0, in both the interpreter and the AOT compiler.
+  [WasmEdge#5061](https://github.com/WasmEdge/WasmEdge/issues/5061)
+- **Talos** (a Lean wasm interpreter) — `call_indirect` accepted a supertype where the spec
+  requires a subtype, running an ill-typed indirect call. Reproduced straight from the spec's own
+  `gc-type-subtyping.wast`, with no mutation and no hand-seed.
+  [cajal-technologies/talos#95](https://github.com/cajal-technologies/talos/issues/95)
+
+Mature production engines (V8, wasmtime) are conformant across both the corpus and the generated
+mutations — the tool does not false-positive on them. Its edge is **maturing / research
+interpreters**, and (via `mutate`) **novel ill-typed modules** the big engines have not already fuzzed.
 
 ## Honest limits
 
