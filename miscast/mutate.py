@@ -135,4 +135,21 @@ def mutate_module(wat):
         rep = "(sub " if m.group(1) else "(sub final "
         out.append(("drop-final" if m.group(1) else "add-final", wat[:m.start()] + rep + wat[m.end():]))
 
+    # (7) cast ladders: wrap a struct.new / array.new in a value-preserving up-and-down ref.cast
+    #     chain of growing depth. Every cast genuinely succeeds (the value IS each of those types),
+    #     so the result is unchanged — but it hammers the engine's ref.cast lowering, the GC-codegen
+    #     surface where mature engines actually have bugs (and that the validator can't catch).
+    nm = re.search(r"\((struct\.new(?:_default)?|array\.new(?:_default|_fixed)?)\s+(\$\w+)", wat)
+    if nm:
+        op, ty = nm.group(1), nm.group(2)
+        end = _balanced(wat, nm.start())
+        expr = wat[nm.start():end]
+        base = "struct" if op.startswith("struct") else "array"
+        for chain in ([base], [base, "eq"], [base, "eq", "any"], [base, "eq", "any", "eq", base]):
+            wrapped = expr
+            for ht in chain:                                   # upcast (then back down) — all succeed
+                wrapped = f"(ref.cast (ref {ht}) {wrapped})"
+            wrapped = f"(ref.cast (ref {ty}) {wrapped})"        # land back on the concrete type
+            out.append((f"cast-ladder@{ty.lstrip('$')}:{len(chain)}", wat[:nm.start()] + wrapped + wat[end:]))
+
     return out
