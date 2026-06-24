@@ -79,8 +79,8 @@ def _children(body):
     return out
 
 
-def mutate_module(wat):
-    """Return [(label, variant_wat), ...] — type-relationship breakages of `wat`."""
+def _single(wat):
+    """One mutation: return [(label, variant_wat), ...] — type-relationship / op breakages of `wat`."""
     out = []
     declared = list(dict.fromkeys(TYPE_DECL.findall(wat)))
 
@@ -145,11 +145,36 @@ def mutate_module(wat):
         end = _balanced(wat, nm.start())
         expr = wat[nm.start():end]
         base = "struct" if op.startswith("struct") else "array"
-        for chain in ([base], [base, "eq"], [base, "eq", "any"], [base, "eq", "any", "eq", base]):
+        cycle = [base, "eq", "any"]                            # each a valid up/down cast — all succeed
+        for reps in (1, 2, 4, 8, 16):                          # depth up to 48 casts — hammer the lowering
             wrapped = expr
-            for ht in chain:                                   # upcast (then back down) — all succeed
+            for ht in cycle * reps:
                 wrapped = f"(ref.cast (ref {ht}) {wrapped})"
             wrapped = f"(ref.cast (ref {ty}) {wrapped})"        # land back on the concrete type
-            out.append((f"cast-ladder@{ty.lstrip('$')}:{len(chain)}", wat[:nm.start()] + wrapped + wat[end:]))
+            out.append((f"cast-ladder@{ty.lstrip('$')}:{3 * reps}", wat[:nm.start()] + wrapped + wat[end:]))
 
+        # ref through nested control flow: a different codegen path than casts (block params / ref
+        # values flowing through control flow), value- and identity-preserving.
+        for n in (1, 4, 16):
+            wrapped = expr
+            for _ in range(n):
+                wrapped = f"(block (result (ref {ty})) {wrapped})"
+            out.append((f"block-roundtrip@{ty.lstrip('$')}:{n}", wat[:nm.start()] + wrapped + wat[end:]))
+
+    return out
+
+
+def mutate_module(wat, compound=3, branch=4):
+    """Single-op mutations PLUS compound variants that stack several mutations at once — a deep
+    pile-up that no single corpus case (or semantics-preserving tool) produces. Bounded by `branch`
+    per level over `compound` levels so the count stays runnable."""
+    out = _single(wat)
+    frontier = out[:branch]
+    for _ in range(compound):                                  # stack up to `compound` more mutations
+        nxt = []
+        for label, vm in frontier:
+            for lbl2, v2 in _single(vm)[:branch]:
+                out.append((f"{label}+{lbl2}", v2))
+                nxt.append((f"{label}+{lbl2}", v2))
+        frontier = nxt[:branch]
     return out
