@@ -13,7 +13,8 @@ import tempfile
 from .config import NODE, ORACLE, WORK, SPEC_WASM
 from .toolchain import _run
 
-_NUM = re.compile(r"-?(?:\d+\.\d+|\d+|inf|nan)")   # an integer or float value at the start of output
+_NUM = re.compile(r"-?(?:0x[0-9a-fA-F]+|\d+\.\d+(?:[eE][+-]?\d+)?|\d+(?:[eE][+-]?\d+)?|inf|nan)", re.I)
+#   an integer (incl. 0x hex) or float (incl. scientific) value at the start of a custom SUT's output
 
 
 def be_v8(wat, wasm, export, args):
@@ -158,8 +159,8 @@ def validate_module(module_wat, engines):
             out[en] = _spec_validate(module_wat)
         elif en == "wasmtime":
             out[en] = ("UNSUP" if wsm is None else
-                       ("ACCEPT" if _run(["wasmtime", "compile", wsm, "-o", os.devnull]).returncode == 0
-                        else "REJECT"))
+                       ("ACCEPT" if _run(["wasmtime", "compile", "-W", "function-references=y,gc=y",
+                                          wsm, "-o", os.devnull]).returncode == 0 else "REJECT"))
         elif en == "v8" and NODE:
             out[en] = _v8_validate(wsm)
         elif en == "custom":

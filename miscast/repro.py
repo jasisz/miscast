@@ -56,7 +56,7 @@ def _write_validation(name, repro, verdicts, cols):
     cmds = {
         "wtools": f"wasm-tools validate {wsm} --features={FEATURES}        # nonzero rc = REJECT",
         "spec": f"{SPEC_WASM or '$SPEC_WASM'} module.wast                  # 'validation error' = REJECT",
-        "wasmtime": f"wasmtime compile {wsm} -o /dev/null                  # nonzero rc = REJECT",
+        "wasmtime": f"wasmtime compile -W function-references=y,gc=y {wsm} -o /dev/null   # nonzero rc = REJECT",
         "v8": f"{NODE or 'node'} {ORACLE} {wsm} __validate__",
         "custom": os.environ.get("CUSTOM_CMD", "$CUSTOM_CMD").format(wat=wp, wasm=wsm, export=ex),
     }

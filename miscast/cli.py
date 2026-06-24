@@ -93,7 +93,10 @@ def main():
                 log.append(f"[{title}] {nm}: {verdicts} -> {verdict}")
                 repro_dirs.append(write_repro(nm, repro, verdicts, expected, cols))
 
-    def pool(fn, items):
+    def pool(label, fn, items):
+        # a full-corpus run is minutes long; announce each section up front (flushed) so the
+        # terminal isn't blank — the section's rows print when the pool drains.
+        print(f"# running {label} ({len(items)} cases)…", flush=True)
         with ThreadPoolExecutor(max_workers=args.jobs) as ex:
             return list(ex.map(fn, items))
 
@@ -118,24 +121,25 @@ def main():
               f"stateful={nstateful} in {len(stateful_groups)} file(s)  "
               f"(malformed not run={stats['malformed']}, unrunnable={stats['skip']})")
         print(f"# engines={'+'.join(base_cols)}  sut={sut}  jobs={args.jobs}")
-        print(f"# tools={tool_versions(engines)}")
+        print(f"# tools={tool_versions(engines)}", flush=True)
         section("execution — per-action value / trap differential",
-                pool(lambda c: differential(c, sut, engines), action_cases), base_cols)
+                pool("execution", lambda c: differential(c, sut, engines), action_cases), base_cols)
         if invalid_segs:
             section("validation — assert_invalid (does the SUT reject an ill-typed module?)",
-                    pool(lambda s: validation_differential(s, sut, engines), invalid_segs),
+                    pool("validation", lambda s: validation_differential(s, sut, engines), invalid_segs),
                     ["wtools"] + base_cols)
         if stateful_groups:
             section("conformance — whole stateful .wast files run natively on the reference interpreter",
-                    pool(lambda g: conformance_differential(g, sut, engines), stateful_groups), base_cols)
+                    pool("conformance", lambda g: conformance_differential(g, sut, engines), stateful_groups),
+                    base_cols)
     else:
         cases, stats = load_corpus(args.seeds)
         work, untested = MODES[args.mode](cases, args.n)
         print(f"# mode={args.mode}  files={stats['files']}  modules={stats['modules']}  cases={len(work)}")
         print(f"# engines={'+'.join(base_cols)}  sut={sut}  jobs={args.jobs}")
-        print(f"# tools={tool_versions(engines)}")
+        print(f"# tools={tool_versions(engines)}", flush=True)
         section("execution — per-action value / trap differential",
-                pool(lambda c: differential(c, sut, engines), work), base_cols)
+                pool("execution", lambda c: differential(c, sut, engines), work), base_cols)
         if untested:
             print(f"\n!! mutate: {len(untested)} module(s) had no sweepable op")
 

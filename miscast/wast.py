@@ -1,10 +1,10 @@
-"""Parse a .wast script into runnable cases.
+"""Parse a .wast script into runnable segments / cases.
 
-A case is a 5-tuple: (name, module_wat, export, args, expected), where args is a
-list of (type, value) and expected is "TRAP" / "OK <bits>" / "RET" (non-trap,
-value uncaptured) / None (a bare invoke). assert_invalid / assert_malformed are
-counted but not run (validation-differential is not yet implemented). A bare .wat
-file becomes a single case exercised by (invoke "f").
+`parse_script` (the current path) turns a file into an ordered list of SEGMENTS — a module plus
+the actions that apply to it (kind "run"), or an `assert_invalid` module that a conformant engine
+must reject (kind "invalid"). `parse_wast` (the legacy flat path, still used by mutate / smith)
+yields per-invoke cases. A bare .wat file becomes one module exercised by (invoke "f").
+assert_malformed and multi-module `register` are not modeled yet (counted under malformed / skip).
 """
 import glob
 import os
@@ -30,11 +30,19 @@ def _assert_reason(form):
 
 
 def _sig_results(module, export):
+    """Result value-types of `export`'s function, or None if not found / not a function export."""
     m = re.search(r'\(func\s+\(export\s+"%s"\)%s' % (re.escape(export), _SIG), module)
     if not m:
         em = re.search(r'\(export\s+"%s"\s+\(func\s+(\$\w+)\)' % re.escape(export), module)
         if em:
-            m = re.search(r"\(func\s+%s\b%s" % (re.escape(em.group(1)), _SIG), module)
+            fid = re.escape(em.group(1))
+            # take the func DEFINITION, not the `(export "x" (func $id))` reference (which is
+            # `(func $id)` immediately closed) — else, when the export precedes the definition,
+            # we'd read an empty signature and silently disable value comparison.
+            for fm in re.finditer(r"\(func\s+%s\b" % fid, module):
+                if not module[fm.end():].lstrip().startswith(")"):
+                    m = re.match(_SIG, module[fm.end():])
+                    break
     if not m:
         return None
     r = re.search(r"\(result\s+([^()]*)\)", m.group(1))
@@ -43,15 +51,18 @@ def _sig_results(module, export):
 
 def result_type(module, export):
     """How to compare the export's result value across engines:
-      "int"   -> all results i32/i64        (compare as u32)
+      "int"   -> all results i32            (compare as u32)
+      "int64" -> any result i64             (compare as u64 — a 32-bit mask hides a high-word diff)
       "float" -> any result f32/f64         (parse to a float, NaN canonical)
       None    -> ref / v128 / void / unknown -> compare by status (trap/return) only
     Best-effort from the module text."""
     res = _sig_results(module, export)
     if not res:
         return None
-    if all(t in ("i32", "i64") for t in res):
+    if all(t == "i32" for t in res):
         return "int"
+    if all(t in ("i32", "i64") for t in res):
+        return "int64"
     if any(t in ("f32", "f64") for t in res):
         return "float"
     return None

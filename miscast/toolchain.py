@@ -7,14 +7,21 @@ per-key lock lets distinct modules prepare concurrently while a shared one runs
 the toolchain exactly once.
 """
 import hashlib
+import os
 import subprocess
 import threading
 
 from .config import WORK, FEATURES
 
+TIMEOUT = int(os.environ.get("MISCAST_TIMEOUT", "20"))   # per-subprocess wall clock; a hung SUT or a
+#   non-terminating module must not deadlock the run (smith/mutate feed untrusted modules to the SUT)
 
-def _run(cmd):
-    return subprocess.run(cmd, capture_output=True, text=True)
+
+def _run(cmd, timeout=None):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout or TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", "miscast: timeout")
 
 
 _prepared = {}

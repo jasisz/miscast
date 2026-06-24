@@ -13,13 +13,15 @@ def _status(v):
     return "OK" if s in ("OK", "RET") else s
 
 
-def _ikey(v):
-    """u32 comparison key for an integer result, or None if it isn't a plain integer."""
+def _ikey(v, bits=32):
+    """integer comparison key masked to `bits` — engines print i32/i64 with differing sign
+    conventions (e.g. 4294967295 vs -1), so normalize by result width. i64 MUST use 64 bits or
+    a divergence only in the high 32 bits is invisible. None if it isn't a plain integer."""
     p = v.split()
     if p[0] != "OK" or len(p) != 2 or p[1] in ("_", "ref"):
         return None
     try:
-        return int(p[1], 0) & 0xFFFFFFFF
+        return int(p[1], 0) & ((1 << bits) - 1)
     except ValueError:
         return None
 
@@ -106,7 +108,9 @@ def classify(verdicts, sut, expected, rtype="int"):
     if ostatus == "OK" and ss == "OK":
         # compare the value with the key for this result type; a ref / void / unknown result
         # (rtype None) is compared by status only.
-        keyfn = _ikey if rtype == "int" else _fkey if rtype == "float" else None
+        keyfn = ((lambda v: _ikey(v, 32)) if rtype == "int"
+                 else (lambda v: _ikey(v, 64)) if rtype == "int64"
+                 else _fkey if rtype == "float" else None)
         if keyfn:
             ovals = {keyfn(v) for v in runnable if keyfn(v) is not None}
             sval = keyfn(s)

@@ -16,8 +16,9 @@ botched subtype/cast check) a conformant engine would reject.
 python3 -m miscast --sut ENGINE [--oracles LIST] [--mode replay|mutate|smith] [--seeds DIR] [--overtrap]
 ```
 
-**No third-party dependencies** — only the Python standard library, plus the
-external CLI tools `wasm-tools`, `node` (≥22, for the V8 oracle) and `wasmtime`.
+**No third-party dependencies** — only the Python standard library. The one external
+tool it requires is `wasm-tools`; the engines are optional and auto-detected: `node`
+(≥22, for the V8 oracle), `wasmtime`, and the reference interpreter (via `SPEC_WASM`).
 Run from the repo root. The code is a small package (`miscast/`): `config` /
 `toolchain` / `engines` / `verdict` / `runner` / `mutate` / `wast` / `modes` /
 `repro` / `cli`.
@@ -46,15 +47,16 @@ A bare `.wat` is accepted too — treated as one module exercised by `(invoke "f
 So the tool consumes two corpora in the same format:
 - **`seeds/`** — our hand-written `.wat` probes, one subtyping corner each.
 - **`spec/wast/`** — the official WebAssembly **core** testsuite (~114 files, GC
-  included). `./spec/fetch.sh` pulls it (type-subtyping, ref_test, ref_cast,
-  br_on_cast, struct, array, i31, …).
+  included). `./spec/fetch.sh` pulls it; the GC subdir files land under a `gc-` prefix
+  (`gc-type-subtyping`, `gc-ref_test`, `gc-ref_cast`, `gc-br_on_cast`, `gc-struct`,
+  `gc-array`, `gc-i31`, …).
 
 ## Engines (auto-detected; `--sut` picks the one under test, the rest are oracles)
 
 | engine     | how                                                                   |
 |------------|-----------------------------------------------------------------------|
 | `v8`       | Node ≥22 (WasmGC) + bundled `oracle/v8.js`                            |
-| `wasmtime` | `wasmtime run --invoke` (execution) · `wasmtime wast` (conformance) · `wasmtime compile` (validation) |
+| `wasmtime` | `wasmtime run --invoke` (execution) · `wasmtime compile` (validation); conformance: n/a (see Honest limits) |
 | `spec`     | the WebAssembly **reference interpreter** (the spec oracle), via env `SPEC_WASM=/path/to/wasm` |
 | `custom`   | **your** interpreter, via env `CUSTOM_CMD="cmd {wat} {wasm} {export}"` — no code change |
 
@@ -94,12 +96,27 @@ CUSTOM_CMD="/path/to/talos/runner {wat} {export}" \
 CUSTOM_CMD="..." python3 -m miscast --mode mutate --seeds seeds --sut custom
 ```
 
-Replaying the official GC `type-subtyping.wast` against the **Talos** Lean
+Replaying the official `gc-type-subtyping.wast` against the **Talos** Lean
 interpreter reproduces its `call_indirect` soundness bug with **no mutation and no
 hand-seed**: the spec's own `(assert_trap (invoke "failN") "indirect call type
-mismatch")` cases *run* instead of trapping — V8, wasmtime, and the assert all say
-trap, Talos returns. (Reported upstream; root cause is `call_indirect` requiring an
-*exact* signature match instead of subtyping.)
+mismatch")` cases *run* instead of trapping — V8, wasmtime, the reference interpreter
+and the spec's own assert all trap, Talos returns. (From the outside the
+`call_indirect` check looks like an exact structural signature compare rather than a
+subtype check.)
+
+Trimmed output from that run (Talos as the SUT):
+
+```
+## execution — per-action value / trap differential
+case                         v8     wasmtime  spec   custom  assert  verdict
+gc-type-subtyping#31:fail1   TRAP   TRAP      TRAP   OK _    TRAP    SOUNDNESS  <<<
+gc-type-subtyping#33:run     OK 1   OK 1      OK 1   OK 0    OK 1    VALUE      <<<
+...
+FINDINGS=19  SOUNDNESS=5  VALUE=14
+```
+
+Each finding also writes `work/repro/<case>/` — the module, a runnable `case.wast`,
+and the exact command each engine ran.
 
 ## Why targeted, and how it differs from existing tools
 
@@ -111,7 +128,7 @@ slot — and is **SUT-agnostic**. That is a different niche from every existing 
 |------|-----------|-----------------|-------|----|-----------|
 | [Waltzz](https://github.com/mobsceneZ/Waltzz) (USENIX'25) | coverage-guided greybox | **preserves** (stack-invariant) | instruction / stack-type | no — "adheres to the established Wasm standard" | memory-safety / CVE |
 | wasm-smith + [wasmtime diff-fuzz](https://github.com/bytecodealliance/wasmtime/blob/main/fuzz/README.md) | random from opaque bytes | preserves | instruction | yes | wrong-result — but can't build a subtyping mismatch ([#4322](https://github.com/bytecodealliance/wasmtime/issues/4322)) |
-| wasm-mutate | mutation | semantics-preserving | encoding | **can't even parse GC** | compiler / optimizer |
+| wasm-mutate | mutation | **semantics-preserving** | encoding | maturing | compiler / optimizer |
 | WADIFF / WASMaker / WRTester | random / symbolic / reassembly | preserves | bytecode / instruction | mostly pre-GC | runtime divergence |
 | **miscast** | **differential + spec replay** | **deliberately violates** | **type relationships** | **GC subtyping** | **type-soundness** |
 
