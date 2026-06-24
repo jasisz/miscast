@@ -8,6 +8,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from miscast.verdict import _ikey, _fkey, classify, classify_validation, classify_conformance
+from miscast.wast import _norm_arg
 
 
 def eq(name, got, want):
@@ -77,6 +78,16 @@ def test_classify_conformance():
     eq("conforms", classify_conformance({"spec": "PASS", "custom": "PASS"}, "custom"), ("agree", False))
     eq("one-shot SUT can't run a script", classify_conformance({"spec": "PASS", "custom": "n/a"}, "custom"),
        ("sut-stateful-na", False))
+
+
+def test_norm_arg():
+    # spec operands are written in hex; a SUT's CLI may parse hex as 0, so normalize to signed decimal.
+    eq("i32 hex positive", _norm_arg("i32", "0x7fffffff"), "2147483647")
+    eq("i32 hex sign bit", _norm_arg("i32", "0x80000000"), "-2147483648")
+    eq("i32 all-ones is -1", _norm_arg("i32", "0xffffffff"), "-1")
+    eq("i64 hex sign bit", _norm_arg("i64", "0x8000000000000000"), "-9223372036854775808")
+    eq("decimal passes through", _norm_arg("i32", "-1"), "-1")
+    eq("plain decimal", _norm_arg("i64", "42"), "42")
 
 
 if __name__ == "__main__":

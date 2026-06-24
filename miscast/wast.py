@@ -127,6 +127,18 @@ def find_subform(text, head):
     return None
 
 
+def _norm_arg(t, v):
+    """Canonicalize an i32/i64 literal to a SIGNED DECIMAL string. The spec writes operands in hex
+    (`0x80000000`), but an arbitrary SUT's CLI may parse hex as 0 (wasmedge does) — and the tool's
+    whole pitch is 'any interpreter, no code change', so normalize to a form every runtime accepts."""
+    n = int(v, 0)                                      # parse hex / decimal / negative
+    bits = 64 if t == "i64" else 32
+    n &= (1 << bits) - 1                               # wrap to the value's bit-width...
+    if n >= 1 << (bits - 1):                           # ...then to its signed interpretation
+        n -= 1 << bits
+    return str(n)
+
+
 def parse_invoke(invsub):
     if re.search(r"\(invoke\s+\$", invsub):            # (invoke $module "fn") -> multi-module, skip
         return None
@@ -136,7 +148,7 @@ def parse_invoke(invsub):
     after = invsub[mn.end():]
     if re.search(r"\((?:ref|f32|f64|v128)", after):    # non-numeric args can't be passed via CLI
         return None
-    return mn.group(1), [(t, v) for t, v in ARG_RE.findall(after)]
+    return mn.group(1), [(t, _norm_arg(t, v)) for t, v in ARG_RE.findall(after)]
 
 
 def parse_wast(text, prefix):
