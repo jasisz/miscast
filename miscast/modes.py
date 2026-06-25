@@ -21,6 +21,7 @@ from .externconvert import gen as externconvert_gen
 from .castbr import gen as castbr_gen
 from .eh import gen as eh_gen, count as eh_count
 from .exnstack import exnstack_gen
+from .compose import compose_gen
 from .mutate import mutate_module
 
 
@@ -132,6 +133,18 @@ def gen_exnstack(_cases, n):
     return out, []
 
 
+def gen_compose(_cases, n):
+    """Compositional feature-interaction programs (see compose.py): a GC payload threaded through a random MIX
+    of value-preserving conduits (exception tag / call / global / br_on_cast), optionally stressed by a forced
+    GC, read direct or via a local. The oracle is the payload value (every conduit preserves it); a SUT that
+    mangles the reference anywhere in the mix returns a wrong value. Generates interactions no single mode does."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = compose_gen(i)
+        out.append((f"compose{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
 def gen_all(cases, n):
     """Run the whole self-checking GC-soundness oracle suite in one pass — `morphism` + `recgroup` +
     `externconvert` + `castbr` + `eh`. None need a corpus and each program carries its own per-program
@@ -152,4 +165,4 @@ def gen_all(cases, n):
 
 MODES = {"replay": gen_replay, "mutate": gen_mutate, "smith": gen_smith, "morphism": gen_morphism,
          "recgroup": gen_recgroup, "externconvert": gen_externconvert, "castbr": gen_castbr,
-         "eh": gen_eh, "exnstack": gen_exnstack, "all": gen_all}
+         "eh": gen_eh, "exnstack": gen_exnstack, "compose": gen_compose, "all": gen_all}

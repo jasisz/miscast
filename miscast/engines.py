@@ -42,7 +42,7 @@ def be_v8(wat, wasm, export, args):
 
 
 def be_wasmtime(wat, wasm, export, args):
-    r = _run(["wasmtime", "run", "--invoke", export, "-W", "function-references=y,gc=y,exceptions=y", wasm] + [v for _, v in args])
+    r = _run(["wasmtime", "run", "--invoke", export, "-W", "function-references=y,gc=y,exceptions=y,tail-call=y", wasm] + [v for _, v in args])
     out, both = r.stdout.strip(), (r.stdout + r.stderr).lower()
     if "trap" in both:
         return "TRAP"
@@ -146,7 +146,7 @@ def repro_command(engine, wat_path, wasm_path, export, args, wast_path=None):
         return " ".join([NODE or "node", ORACLE, wasm_path, export] + av)
     if engine == "wasmtime":
         return " ".join(["wasmtime", "run", "--invoke", export,
-                         "-W", "function-references=y,gc=y,exceptions=y", wasm_path] + a)
+                         "-W", "function-references=y,gc=y,exceptions=y,tail-call=y", wasm_path] + a)
     if engine == "mcr":
         return " ".join([MC_RUNNER, wasm_path, "--invoke", export]
                         + sum([["--arg", f"{t}:{v}"] for t, v in args if t in ("i32", "i64")], []))
@@ -225,7 +225,7 @@ def validate_module(module_wat, engines):
             out[en] = _spec_validate(module_wat)
         elif en == "wasmtime":
             out[en] = ("UNSUP" if wsm is None else
-                       ("ACCEPT" if _run(["wasmtime", "compile", "-W", "function-references=y,gc=y,exceptions=y",
+                       ("ACCEPT" if _run(["wasmtime", "compile", "-W", "function-references=y,gc=y,exceptions=y,tail-call=y",
                                           wsm, "-o", os.devnull]).returncode == 0 else "REJECT"))
         elif en == "v8" and NODE:
             out[en] = _v8_validate(wsm)

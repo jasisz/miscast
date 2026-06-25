@@ -136,6 +136,25 @@ def test_exnstack():
     eq("exnstack sweeps every payload kind", kinds, set(_KINDS))
 
 
+def test_compose():
+    # the compositional generator: a payload threaded through a mix of value-preserving conduits — the
+    # oracle is the payload value (every conduit preserves it). Pure; engines re-checked by `python3 -m miscast.compose`.
+    from miscast.compose import compose_gen, _CONDUITS, _heap
+    from miscast.exnstack import _KINDS
+    eq("heap of a typed ref", _heap("(ref $arr)"), "$arr")
+    eq("heap of i31", _heap("(ref i31)"), "i31")
+    kinds, conduits = set(), set()
+    for s in range(40):
+        label, export, expected, wat = compose_gen(s)
+        eq(f"compose {s} exports f", export, "f")
+        eq(f"compose {s} is a module", wat.strip().startswith("(module"), True)
+        eq(f"compose {s} expected is OK <v>", expected.startswith("OK "), True)
+        kinds.add(label.split("-")[1])
+        conduits |= {c for c, _ in _CONDUITS if c in label}
+    eq("compose sweeps every payload kind", kinds, set(_KINDS))
+    eq("compose exercises every conduit", conduits, {c for c, _ in _CONDUITS})
+
+
 def test_norm_arg():
     # spec operands are written in hex; a SUT's CLI may parse hex as 0, so normalize to signed decimal.
     eq("i32 hex positive", _norm_arg("i32", "0x7fffffff"), "2147483647")
