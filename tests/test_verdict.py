@@ -118,6 +118,24 @@ def test_eh_battery():
     eq("eh gen cycles by seed", gen(0), gen(count()))
 
 
+def test_exnstack():
+    # the generated unwind programs: the baked expected must encode the catcher level (the depth bonus) so a
+    # MIS-ROUTED throw shows as a wrong value; the simulator is pure (no toolchain; engines re-checked by
+    # `python3 -m miscast.exnstack`).
+    from miscast.exnstack import exnstack_gen, _BONUS, _KINDS
+    kinds = set()
+    for s in range(30):
+        label, export, expected, wat = exnstack_gen(s)
+        eq(f"exnstack {s} exports f", export, "f")
+        eq(f"exnstack {s} is a module", wat.strip().startswith("(module"), True)
+        eq(f"exnstack {s} carries a GC payload through a tag", "try_table" in wat and "throw" in wat, True)
+        catcher = int(label.split("@L")[1])
+        val = int(expected.split()[1])
+        eq(f"exnstack {s} bonus encodes the catcher level", val // _BONUS, catcher)
+        kinds.add(label.split("-")[2])
+    eq("exnstack sweeps every payload kind", kinds, set(_KINDS))
+
+
 def test_norm_arg():
     # spec operands are written in hex; a SUT's CLI may parse hex as 0, so normalize to signed decimal.
     eq("i32 hex positive", _norm_arg("i32", "0x7fffffff"), "2147483647")

@@ -12,7 +12,7 @@ ill-typed cases; curated hand-seeds cover the corners the testsuite misses.
 It also **generates self-checking** GC-soundness programs that carry their own oracle
 — a shadow-GC model, rec-group canonicalization, extern-convert round-trips,
 `br_on_cast` value-forwarding, exception-handling unwinding (the `morphism` / `recgroup`
-/ `externconvert` / `castbr` / `eh` modes) — so a single engine's wrong answer is a
+/ `externconvert` / `castbr` / `eh` / `exnstack` modes) — so a single engine's wrong answer is a
 self-evident bug with no second engine to consult; and a curated battery of spec-invalid
 modules (`invalid`) that every conformant validator rejects. These found the
 maturing-interpreter bugs below.
@@ -21,7 +21,7 @@ maturing-interpreter bugs below.
 botched subtype/cast check) a conformant engine would reject.
 
 ```
-python3 -m miscast --sut ENGINE [--mode replay|mutate|smith|morphism|recgroup|externconvert|castbr|eh|invalid|all] [--oracles LIST] [--seeds DIR] [-n N] [--overtrap]
+python3 -m miscast --sut ENGINE [--mode replay|mutate|smith|morphism|recgroup|externconvert|castbr|eh|exnstack|invalid|all] [--oracles LIST] [--seeds DIR] [-n N] [--overtrap]
 ```
 
 **No third-party dependencies** — only the Python standard library. The one external
@@ -29,7 +29,7 @@ tool it requires is `wasm-tools`; the engines are optional and auto-detected: `n
 (≥22, for the V8 oracle), `wasmtime`, and the reference interpreter (via `SPEC_WASM`).
 Run from the repo root. The code is a small package (`miscast/`): `config` /
 `toolchain` / `engines` / `verdict` / `runner` / `mutate` / `reify` / `morphism` /
-`recgroup` / `externconvert` / `castbr` / `invalid` / `wast` / `reduce` / `modes` / `repro` /
+`recgroup` / `externconvert` / `castbr` / `eh` / `exnstack` / `invalid` / `wast` / `reduce` / `modes` / `repro` /
 `cli`, plus an optional Rust embedder in `runner/`.
 
 ## Native input: `.wast`
@@ -101,8 +101,9 @@ faults the host with an `ArrayIndexOutOfBoundsException`, where a plain UNSUP wo
 | `externconvert` | **`extern.convert_any` / `any.convert_extern`** round-trip: a GC ref pushed out to `externref` and back must be preserved, so each program self-checks by returning the round-tripped value. A SUT that traps or returns something else diverges (an engine missing the conversion opcodes). |
 | `castbr` | **`br_on_cast` / `br_on_cast_fail`** value-forwarding: the cast operand — not null — must reach the branch, so each program reads the forwarded reference back (`ref.is_null` / `ref.test` / a field) and self-checks. A SUT that forwards a null returns the wrong value (or traps on the field read). |
 | `eh` | **exception-handling** self-checks (`try_table` / `throw` / `throw_ref` / `exnref`): each program returns a sentinel only the conformant unwinding + tag/`exnref` forwarding produces (or traps where a null `throw_ref` must) — plain / multi-param / `catch_all` / `catch_ref` / `catch_all_ref` catches, an `exnref` captured into a local / GC struct field / array element / passed across a call frame, `throw_ref` re-raising with its payload intact, propagation past a non-matching handler, deep multi-frame unwinds, and a GC reference forwarded through a tag. The per-program oracle is baked in, so one engine's wrong answer is self-evident (found a wasmz array-ref corruption, #9). The spec-invalid EH modules (catch / throw arity + type rules) live in the `invalid` battery. |
+| `exnstack` | **generated** `try_table` unwind trees where the **Python unwind simulator is the oracle**: because exception routing is statically decidable, the generator bakes the exact result, so each program self-checks at an unwind depth and routing complexity the hand-written `eh` fixtures can't reach. A nest of handlers with selective tag matching catches an innermost `throw` carrying a GC payload swept across **kind** (a mutable array read at a non-zero index, a two-field struct, an `i31`, or a struct nesting an array) and **consume pattern** (read directly off the catch-forwarded value, or first stored to a local); each handler adds `level*100000`, so a **mis-routed** throw (caught by the wrong handler) and a **corrupted reference** carried across the unwind both surface as a wrong value. It pins the wasmz array-ref-through-tag corruption to **array-element reads specifically** — it fires on a bare array and on an array nested in a struct (even via a local), but spares pure struct-field and `i31` reads — while Talos, WasmEdge and Wizard route and preserve every kind cleanly. |
 | `invalid` | a curated battery of **spec-invalid GC modules** (`corpus/invalid/*.wat`, one per case) routed to the validation differential — type-section subtyping (narrow / drop / retype a field, extend a `final` type, exceed depth 63), operand-stack typing (wrong block / function result type or arity, non-defaultable `array.new_default`), and reference-type casts (a `ref.test` / `ref.cast` whose target heap type is in a different hierarchy than the operand, a `br_on_cast` / `br_on_cast_fail` whose target label cannot receive the forwarded operand). Every conformant validator rejects them; a SUT that **accepts and runs** one has no validator for that rule and is unsound. Add a case by dropping a `.wat` into the corpus. |
-| `all` | run the whole **self-checking soundness oracle suite** (`morphism` + `recgroup` + `externconvert` + `castbr` + `eh`) **and** the `invalid` validation battery in one command — no corpus needed, each execution program is its own oracle, and a finding's case name says which probe fired. |
+| `all` | run the whole **self-checking soundness oracle suite** (`morphism` + `recgroup` + `externconvert` + `castbr` + `eh` + `exnstack`) **and** the `invalid` validation battery in one command — no corpus needed, each execution program is its own oracle, and a finding's case name says which probe fired. |
 
 ## The shadow-GC oracle (`--mode morphism`)
 

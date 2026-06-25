@@ -56,8 +56,8 @@ def main():
                                  description="a .wast-native differential tester for WebAssembly GC subtype soundness")
     ap.add_argument("--mode", choices=list(MODES) + ["invalid"], default="replay",
                     help="replay/mutate (corpus), smith (random), the self-checking oracles "
-                         "morphism/recgroup/externconvert/castbr/eh, invalid (spec-invalid validation battery), "
-                         "or 'all' to run the whole oracle suite + the validation battery at once")
+                         "morphism/recgroup/externconvert/castbr/eh/exnstack, invalid (spec-invalid validation "
+                         "battery), or 'all' to run the whole oracle suite + the validation battery at once")
     ap.add_argument("--seeds", default=SEEDS_DEFAULT, help="dir of .wast / .wat corpus")
     ap.add_argument("--sut", required=True, help="engine under test (e.g. wasmtime, custom); the rest are oracles")
     ap.add_argument("--oracles", help="oracle engines to use, comma-separated (the SUT is always "

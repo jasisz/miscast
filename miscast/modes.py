@@ -8,6 +8,7 @@
   externcv extern.convert_any / any.convert_extern round-trip: a GC ref pushed out to externref and back must be preserved
   castbr   br_on_cast / br_on_cast_fail must forward the cast operand (not null) to the branch
   eh       try_table / throw / throw_ref / exnref self-checks: tag forwarding, exnref-as-value, mandated null-throw traps
+  exnstack generated try_table unwind trees whose Python unwind simulator IS the oracle — deep nesting + GC payload
   invalid  a battery of spec-invalid GC modules: does the SUT reject them? (validation differential)
 """
 import os
@@ -19,6 +20,7 @@ from .recgroup import gen as recgroup_gen
 from .externconvert import gen as externconvert_gen
 from .castbr import gen as castbr_gen
 from .eh import gen as eh_gen, count as eh_count
+from .exnstack import exnstack_gen
 from .mutate import mutate_module
 
 
@@ -116,6 +118,20 @@ def gen_eh(_cases, n):
     return out, []
 
 
+def gen_exnstack(_cases, n):
+    """Generated exception-unwind trees (see exnstack.py): a nest of `try_table` handlers with selective tag
+    matching and a GC array payload carried through an innermost `throw`, where the Python unwind simulator
+    computes the expected result by construction (no second engine). Each program self-checks; a SUT that
+    mis-routes the throw to the wrong handler, or corrupts the GC reference across the unwind (the wasmz
+    array-ref-through-tag class), returns a wrong value. Scales with `-n` to ever-deeper nests/routings the
+    hand-written `eh` fixtures cannot reach."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = exnstack_gen(i)
+        out.append((f"exnstack{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
 def gen_all(cases, n):
     """Run the whole self-checking GC-soundness oracle suite in one pass — `morphism` + `recgroup` +
     `externconvert` + `castbr` + `eh`. None need a corpus and each program carries its own per-program
@@ -127,7 +143,7 @@ def gen_all(cases, n):
     out, untested = [], []
     for gen, count in ((gen_morphism, n), (gen_recgroup, min(n, 6)),
                        (gen_externconvert, min(n, 4)), (gen_castbr, min(n, 6)),
-                       (gen_eh, min(n, eh_count()))):
+                       (gen_eh, min(n, eh_count())), (gen_exnstack, min(n, 12))):
         w, u = gen(cases, count)
         out += w
         untested += u
@@ -136,4 +152,4 @@ def gen_all(cases, n):
 
 MODES = {"replay": gen_replay, "mutate": gen_mutate, "smith": gen_smith, "morphism": gen_morphism,
          "recgroup": gen_recgroup, "externconvert": gen_externconvert, "castbr": gen_castbr,
-         "eh": gen_eh, "all": gen_all}
+         "eh": gen_eh, "exnstack": gen_exnstack, "all": gen_all}
