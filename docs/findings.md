@@ -151,6 +151,27 @@ wrong-typed but non-empty label (`i32`) is correctly rejected, isolating the gap
 requirement. Both `br_on_cast` and `br_on_cast_fail`. Found by a deep adversarial sweep, then folded into
 the `invalid` battery.
 
-> Both gaps reproduce on Talos and wasmz as well, but there they are symptoms of an absent validator (Talos's
-> runner does not validate on load; wasmz [#8](https://github.com/Ray-D-Song/wasmz/issues/8)) rather than
-> distinct bugs — Wizard is the notable case because its validator rejects everything else.
+### `array.copy` checks element-type subtyping in the wrong direction — [wizard#656](https://github.com/titzer/wizard-engine/issues/656)
+
+`array.copy` requires the **source** array's element type to be a **subtype** of the **destination**'s, so
+every copied element is assignable to the destination. Wizard checks it backwards: it *rejects* a valid
+widening copy (src elem `<:` dst elem) and *accepts and runs* an invalid narrowing copy (src elem `:>` dst
+elem). The narrowing case is a type confusion — it writes supertype-typed values into a subtype-typed array,
+so a later read at the subtype reads a wrong-typed object; with a wider subtype it reads past the object and
+**faults the host** with an uncaught `java.lang.ArrayIndexOutOfBoundsException` (the JVM target's bounds
+check catches the out-of-bounds — a host crash, not a Wasm trap, and not memory corruption). This is the
+strongest finding by severity class (type confusion → host crash), tempered by it being a contained crash in
+a research engine. Found by the goblin feature-interaction sweep (GC × bulk-array ops).
+
+### `array.new_data` / `array.new_elem` trap on a zero-length access of a dropped segment — [wizard#657](https://github.com/titzer/wizard-engine/issues/657)
+
+A passive data / element segment that has been `data.drop` / `elem.drop`'d has length 0, so an
+`array.new_data` / `array.new_elem` with offset 0 and size 0 is in bounds (`0 + 0 <= 0`) and must produce a
+zero-length array. Wizard traps `MEMORY_OOB` instead (a completeness over-trap). Found by the goblin sweep
+(GC × segments).
+
+> The two validator gaps (#654, #655) and the cast/segment bugs all reproduce on Talos and wasmz as well, but
+> there they are symptoms of an absent validator (Talos's runner does not validate on load; wasmz
+> [#8](https://github.com/Ray-D-Song/wasmz/issues/8)) rather than distinct bugs — Wizard is the notable case
+> because its validator otherwise rejects everything else. (A reported `i31.get_s` "sign-extension" divergence
+> turned out to be a signed/unsigned *display* difference, identical bits — not a bug.)

@@ -80,10 +80,13 @@ chosen subset (the SUT is always run alongside) — so you pick *which* oracles 
 *how many* (`--oracles v8` for a quick one-oracle pass, or wire a reference
 interpreter via `SPEC_WASM` and use `--oracles spec` to check against the spec oracle alone).
 
-By default only **soundness** and **value** divergences are counted. A
-*completeness* divergence (the SUT traps where the oracles run) is the SUT's own
-concern — often just an unmodeled instruction — so it is tallied as `over-traps`
-but flagged only with `--overtrap`.
+By default **soundness**, **value**, and **crash** divergences are counted. A *completeness*
+divergence (the SUT traps where the oracles run) is the SUT's own concern — often just an
+unmodeled instruction — so it is tallied as `over-traps` but flagged only with `--overtrap`.
+A **crash** is distinct from a Wasm trap: a clean `trap` is defined behaviour, but a native
+segfault / Rust panic / uncaught host exception means the *engine itself fell over* on the input —
+a stronger signal, so it is its own class (it surfaced a Wizard `array.copy` type confusion that
+faults the host with an `ArrayIndexOutOfBoundsException`, where a plain UNSUP would have hidden it).
 
 ## Modes
 
@@ -213,6 +216,8 @@ violation — in [`docs/findings.md`](docs/findings.md).
 | wasmz | accepts spec-invalid modules (no validation) | `invalid` | [#8](https://github.com/Ray-D-Song/wasmz/issues/8) |
 | Wizard | `ref.test` / `ref.cast` accept a cross-hierarchy target type | `mutate` | [#654](https://github.com/titzer/wizard-engine/issues/654) |
 | Wizard | `br_on_cast` / `br_on_cast_fail` accept an empty-result target label | `invalid` | [#655](https://github.com/titzer/wizard-engine/issues/655) |
+| Wizard | `array.copy` checks element-type subtyping backwards — narrowing copy → type confusion → host crash | `invalid` | [#656](https://github.com/titzer/wizard-engine/issues/656) |
+| Wizard | `array.new_data` / `array.new_elem` over-trap on a zero-length access of a dropped segment | probe | [#657](https://github.com/titzer/wizard-engine/issues/657) |
 
 Mature production engines (V8, wasmtime, WasmEdge) are conformant across the corpus and every generated
 probe — the tool does not false-positive on them. Its edge is **maturing / research interpreters**.

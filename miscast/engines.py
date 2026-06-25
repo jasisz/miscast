@@ -15,6 +15,11 @@ from .toolchain import _run
 
 _NUM = re.compile(r"-?(?:0x[0-9a-fA-F]+|\d+\.\d+(?:[eE][+-]?\d+)?|\d+(?:[eE][+-]?\d+)?|inf|nan)", re.I)
 #   an integer (incl. 0x hex) or float (incl. scientific) value at the start of a custom SUT's output
+# A HOST crash — the engine itself fell over (a native segfault / Rust panic / uncaught host exception),
+# not a defined Wasm `trap`. This is a distinct, stronger signal than UNSUP: the SUT broke on the input.
+_CRASH = re.compile(r"segmentation|segfault|core dumped|\bpanicked?\b|unable to dump|"
+                    r"exception in thread|out ?of ?memory|outofmemoryerror|"
+                    r"arrayindexoutofbounds|nullpointerexception|stackoverflowerror|illegalstate", re.I)
 
 
 def be_v8(wat, wasm, export, args):
@@ -95,8 +100,10 @@ def make_be_cmd(tmpl):
         if args and no_args:
             return "SUT_NA"
         r = _run(shlex.split(tmpl.format(wat=wat, wasm=wasm, export=export)) + [v for _, v in args])
-        both = (r.stdout + r.stderr).lower()
-        if "trap" in both:
+        both = (r.stdout + r.stderr)
+        if _CRASH.search(both):
+            return "CRASH"                            # the engine itself fell over — not a Wasm trap
+        if "trap" in both.lower():
             return "TRAP"
         m = _NUM.match(r.stdout.strip())
         if m:
@@ -195,6 +202,8 @@ def _custom_validate(module_wat, wp, wsm):
     if _NUM.match(r.stdout.strip()):
         return "ACCEPT"                       # the SUT RAN an ill-typed module -> unsound
     both = r.stdout + r.stderr
+    if _CRASH.search(both):
+        return "ACCEPT"                       # ran the ill-typed module far enough to fault the host -> unsound
     if "trap" in both.lower() or _VALERR.search(both):
         return "REJECT"
     return "UNSUP"

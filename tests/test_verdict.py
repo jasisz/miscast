@@ -8,6 +8,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from miscast.verdict import _ikey, _fkey, classify, classify_validation, classify_conformance
+from miscast.engines import _CRASH
 from miscast.wast import _norm_arg
 
 
@@ -59,6 +60,29 @@ def test_classify_split_and_agree():
        ("oracle-split", False))
     eq("all agree", classify({"v8": "OK 1", "spec": "OK 1", "custom": "OK 1"}, "custom", None, "int"),
        ("agree", False))
+
+
+def test_classify_crash():
+    # the SUT's engine fell over (a HOST crash, not a Wasm trap) on a module the oracles ran -> CRASH finding
+    eq("host crash is a CRASH finding",
+       classify({"v8": "OK 1", "spec": "OK 1", "custom": "CRASH"}, "custom", None, "int"), ("CRASH", True))
+    # a CRASH in an oracle is excluded from the runnable pool — never a confounder
+    eq("a crashed oracle does not poison consensus",
+       classify({"v8": "OK 1", "spec": "CRASH", "custom": "OK 1"}, "custom", None, "int"), ("agree", False))
+
+
+def test_classify_sut_na():
+    # the SUT couldn't receive the action's arguments (CUSTOM_NO_ARGS) -> skipped, never a finding
+    eq("an arg-incapable SUT is skipped",
+       classify({"v8": "OK 1", "spec": "OK 1", "custom": "SUT_NA"}, "custom", None, "int"), ("sut-na", False))
+
+
+def test_crash_regex():
+    eq("a JVM uncaught exception is a crash",
+       bool(_CRASH.search('Exception in thread "main" java.lang.ArrayIndexOutOfBoundsException: 1')), True)
+    eq("a native segfault is a crash", bool(_CRASH.search("Segmentation fault: 11")), True)
+    eq("a Rust panic is a crash", bool(_CRASH.search("thread 'main' panicked at src/lib.rs")), True)
+    eq("a clean Wasm trap is NOT a crash", bool(_CRASH.search("wasm trap: out of bounds memory access")), False)
 
 
 def test_classify_validation():

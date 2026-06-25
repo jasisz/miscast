@@ -1,0 +1,12 @@
+;; reason: array.copy where the source element type is not a subtype of the destination element type (narrowing)
+(module
+  (type $b (sub (struct)))
+  (type $d (sub $b (struct)))
+  (type $ab (array (mut (ref null $b))))
+  (type $ad (array (mut (ref null $d))))
+  (func (export "f") (result i32)
+    (local $s (ref $ab)) (local $t (ref $ad))
+    (local.set $s (array.new_default $ab (i32.const 2)))
+    (local.set $t (array.new_default $ad (i32.const 2)))
+    (array.copy $ad $ab (local.get $t) (i32.const 0) (local.get $s) (i32.const 0) (i32.const 2))
+    (i32.const 22)))

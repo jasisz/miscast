@@ -28,6 +28,7 @@ from .repro import write_repro
 # Verdict -> severity class, in report order. The class names ARE the headline taxonomy.
 SEVERITY = {
     "SOUNDNESS":     "SOUNDNESS",     # SUT runs/accepts what every oracle traps/rejects — the dangerous class
+    "CRASH":         "CRASH",         # the engine itself fell over (segfault / panic / uncaught host exception) — not a Wasm trap
     "VALUE":         "VALUE",         # SUT returns a different value than the oracles agree on
     "completeness":  "OVER_TRAP",     # SUT traps where the oracles run (its own limitation)
     "sut-reject":    "OVER_REJECT",   # SUT errors/refuses where the oracles run (over-rejection)
@@ -40,7 +41,7 @@ SEVERITY = {
     "invalid":       "HARNESS",       # module is invalid in the execution section (handled by validation)
     "agree":         "AGREE",
 }
-CLASS_ORDER = ("SOUNDNESS", "VALUE", "OVER_TRAP", "OVER_REJECT", "ORACLE_SPLIT",
+CLASS_ORDER = ("SOUNDNESS", "CRASH", "VALUE", "OVER_TRAP", "OVER_REJECT", "ORACLE_SPLIT",
                "ORACLE_UNSUP", "SUT_UNSUP", "SUT_NA", "HARNESS", "AGREE")
 
 
@@ -200,7 +201,7 @@ def main():
                     pool("validation", lambda s: validation_differential(s, sut, engines), inval),
                     ["wtools"] + base_cols)
 
-    findings = classes["SOUNDNESS"] + classes["VALUE"]
+    findings = classes["SOUNDNESS"] + classes["CRASH"] + classes["VALUE"]
     print("\n" + "=" * 70)
     print(f"FINDINGS={findings}  SOUNDNESS={classes['SOUNDNESS']}  VALUE={classes['VALUE']}")
     print("  by class: " + "  ".join(f"{k}={classes[k]}" for k in CLASS_ORDER if classes[k]))

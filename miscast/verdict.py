@@ -117,6 +117,8 @@ def classify(verdicts, sut, expected, rtype="int"):
         return "oracle-split", False                # oracles disagree on trap-vs-return -> confounder
     ostatus = statuses.pop()
     ss = _status(s)
+    if ss == "CRASH":
+        return "CRASH", True                         # the engine fell over on a module the oracles ran — robustness
     if ss not in ("OK", "TRAP"):
         # we are past the oracle-unsup gate, so the oracles agreed on a result (OK or TRAP) the SUT
         # couldn't produce — it errored / refused a *valid* module the engines handled. That is a
