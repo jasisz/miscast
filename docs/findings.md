@@ -140,6 +140,26 @@ references forwarded through a tag: a **struct** reference forwarded the same wa
 correctly (`31`), and a plain `array.get` outside any exception returns `15`. Found by the `compose` mode (the exception-tag conduit)
 (`try_table` / `throw` / `exnref` self-checks), distinct from the absent-validator gap in #8.
 
+### memory64 addresses are truncated to 32 bits before the bounds check — [wasmz#10](https://github.com/Ray-D-Song/wasmz/issues/10)
+
+A memory64 (`i64`-indexed) linear-memory address that is out of bounds is **truncated to its low 32 bits
+before the bounds check**, so a high address aliases `addr mod 2^32` and the load / store succeeds — reading
+or **writing** memory the program cannot legally reach — instead of trapping. A memory-safety / sandbox
+escape, not a wrong value.
+
+```wat
+(module (memory i64 1)
+  (func (export "f") (result i32)
+    (i32.store (i64.const 0) (i32.const 1431655765))   ;; sentinel 0x55555555 at offset 0
+    (i32.load (i64.const 4294967296))))                ;; 2^32 — out of bounds, must trap
+```
+
+wasmtime, V8, the reference interpreter, WasmEdge and Wizard all trap (`out of bounds memory access`); wasmz
+returns the aliased sentinel `1431655765`. Controls: a store at `2^32` then a load of offset `0` returns the
+stored value (a **write** escape); a value at offset `8` is read back via address `2^32 + 8` (the address is
+`addr & 0xffffffff`); an address `131072` (`< 2^32`, still OOB) traps correctly — so the 32-bit bounds check
+works and only the **high 32 bits are dropped**. Found by the `memory64` mode.
+
 ### Spec-invalid modules are accepted and run — [wasmz#8](https://github.com/Ray-D-Song/wasmz/issues/8)
 
 `wasmz module.wasm f` loads and runs to completion modules that every conformant validator rejects, returning

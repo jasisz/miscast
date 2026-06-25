@@ -156,6 +156,38 @@ def test_trapline():
     eq("trapline has baked-constant probes", saw_val, True)
 
 
+def test_memory64():
+    from miscast.memory64 import memory64_gen
+    saw_trap = saw_ctrl = False
+    for s in range(18):
+        label, export, expected, wat = memory64_gen(s)
+        eq(f"memory64 {s} exports f", export, "f")
+        eq(f"memory64 {s} is a memory64 module", "(memory i64" in wat, True)
+        eq(f"memory64 {s} expected TRAP/OK", expected == "TRAP" or expected.startswith("OK "), True)
+        saw_trap = saw_trap or expected == "TRAP"
+        saw_ctrl = saw_ctrl or "control-inbounds" in label
+    eq("memory64 has high-address TRAP probes", saw_trap, True)
+    eq("memory64 has an in-bounds control", saw_ctrl, True)
+
+
+def test_arrayops():
+    from miscast.arrayops import arrayops_gen, _FAMILIES
+    fams, saw_trap, saw_val = set(), False, False
+    for s in range(2 * len(_FAMILIES)):
+        label, export, expected, wat = arrayops_gen(s)
+        eq(f"arrayops {s} exports f", export, "f")
+        eq(f"arrayops {s} is a module", wat.strip().startswith("(module"), True)
+        eq(f"arrayops {s} expected TRAP/OK", expected == "TRAP" or expected.startswith("OK "), True)
+        fams.add(label.split("-")[1].split("[")[0])
+        saw_trap = saw_trap or expected == "TRAP"
+        saw_val = saw_val or expected.startswith("OK ")
+    eq("arrayops covers many families", len(fams) >= 7, True)
+    labels = [arrayops_gen(s)[0] for s in range(2 * len(_FAMILIES))]
+    eq("arrayops reproduces the widening copy (Wizard#656)", any("widening" in x for x in labels), True)
+    eq("arrayops reproduces the dropped-segment surface (Wizard#657)", any("dropped" in x for x in labels), True)
+    eq("arrayops has both TRAP and value probes", saw_trap and saw_val, True)
+
+
 def test_norm_arg():
     # spec operands are written in hex; a SUT's CLI may parse hex as 0, so normalize to signed decimal.
     eq("i32 hex positive", _norm_arg("i32", "0x7fffffff"), "2147483647")

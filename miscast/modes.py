@@ -19,6 +19,8 @@ from .morphism import gen as morphism_gen
 from .recgroup import gen as recgroup_gen
 from .compose import compose_gen
 from .trapline import trapline_gen
+from .memory64 import memory64_gen
+from .arrayops import arrayops_gen
 from .mutate import mutate_module
 
 
@@ -108,6 +110,28 @@ def gen_trapline(_cases, n):
     return out, []
 
 
+def gen_memory64(_cases, n):
+    """memory64 address-truncation probes (see memory64.py): a high (>= 2^32) linear-memory address must TRAP,
+    not wrap to its low 32 bits. Each plants a sentinel low and accesses a high address; an engine that returns
+    the sentinel (running where every oracle traps) truncated the address — a memory-safety sandbox escape."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = memory64_gen(i)
+        out.append((f"memory64{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
+def gen_arrayops(_cases, n):
+    """Bulk GC array ops (see arrayops.py): array.copy / array.fill / array.new_data swept for boundary,
+    overlap (memmove), OOB (must trap), and element-type variance — including the VALID widening copy that
+    Wizard#656 wrongly rejects. Self-checking: a copy/fill leaves an exact element, an OOB op traps."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = arrayops_gen(i)
+        out.append((f"arrayops{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
 def gen_all(cases, n):
     """Run the whole self-checking GC-soundness oracle suite in one pass — `morphism` + `recgroup` +
     `compose` (which itself subsumes the old castbr / externconvert / eh / exnstack corners). None need a
@@ -126,4 +150,4 @@ def gen_all(cases, n):
 
 
 MODES = {"replay": gen_replay, "mutate": gen_mutate, "smith": gen_smith, "morphism": gen_morphism,
-         "recgroup": gen_recgroup, "compose": gen_compose, "trapline": gen_trapline, "all": gen_all}
+         "recgroup": gen_recgroup, "compose": gen_compose, "trapline": gen_trapline, "memory64": gen_memory64, "arrayops": gen_arrayops, "all": gen_all}
