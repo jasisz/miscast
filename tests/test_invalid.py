@@ -20,7 +20,7 @@ def eq(name, got, want):
 def test_battery_shape():
     eq("battery is non-empty", len(MODULES) >= 8, True)
     for label, wat, reason in MODULES:
-        eq(f"{label}: is a module", wat.startswith("(module"), True)
+        eq(f"{label}: is a module", "(module" in wat, True)
         eq(f"{label}: exports a runnable f", '(export "f")' in wat, True)
         eq(f"{label}: has a reason", bool(reason), True)
 

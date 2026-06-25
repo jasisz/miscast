@@ -96,7 +96,7 @@ but flagged only with `--overtrap`.
 | `recgroup` | **rec-group canonicalization** trap-differential: two recursion groups holding the same mutually-recursive types in different **member order** are distinct types under iso-recursive canonicalization, so a `call_indirect` against one on a function of the other must **trap**. A SUT that runs it canonicalizes equi-recursively and executed an ill-typed call (found Talos#108). |
 | `externconvert` | **`extern.convert_any` / `any.convert_extern`** round-trip: a GC ref pushed out to `externref` and back must be preserved, so each program self-checks by returning the round-tripped value. A SUT that traps or returns something else diverges (an engine missing the conversion opcodes). |
 | `castbr` | **`br_on_cast` / `br_on_cast_fail`** value-forwarding: the cast operand — not null — must reach the branch, so each program reads the forwarded reference back (`ref.is_null` / `ref.test` / a field) and self-checks. A SUT that forwards a null returns the wrong value (or traps on the field read). |
-| `invalid` | a curated battery of **spec-invalid GC modules** routed to the validation differential — type-section subtyping (narrow / drop / retype a field, extend a `final` type, exceed depth 63) and operand-stack typing (wrong block / function result type or arity, non-defaultable `array.new_default`). Every conformant validator rejects them; a SUT that **accepts and runs** one has no validator for that rule and is unsound. |
+| `invalid` | a curated battery of **spec-invalid GC modules** (`corpus/invalid/*.wat`, one per case) routed to the validation differential — type-section subtyping (narrow / drop / retype a field, extend a `final` type, exceed depth 63), operand-stack typing (wrong block / function result type or arity, non-defaultable `array.new_default`), and reference-type casts (a `ref.test` / `ref.cast` whose target heap type is in a different hierarchy than the operand, a `br_on_cast` / `br_on_cast_fail` whose target label cannot receive the forwarded operand). Every conformant validator rejects them; a SUT that **accepts and runs** one has no validator for that rule and is unsound. Add a case by dropping a `.wat` into the corpus. |
 | `all` | run the whole **self-checking GC-soundness oracle suite** (`morphism` + `recgroup` + `externconvert` + `castbr`) **and** the `invalid` validation battery in one command — no corpus needed, each execution program is its own oracle, and a finding's case name says which probe fired. |
 
 ## The shadow-GC oracle (`--mode morphism`)
@@ -211,6 +211,8 @@ violation — in [`docs/findings.md`](docs/findings.md).
 | wasmz | struct type identity is nominal, not structural | `morphism` | [#6](https://github.com/Ray-D-Song/wasmz/issues/6) |
 | wasmz | `br_on_cast` forwards null to the taken branch | `castbr` | [#7](https://github.com/Ray-D-Song/wasmz/issues/7) |
 | wasmz | accepts spec-invalid modules (no validation) | `invalid` | [#8](https://github.com/Ray-D-Song/wasmz/issues/8) |
+| Wizard | `ref.test` / `ref.cast` accept a cross-hierarchy target type | `mutate` | [#654](https://github.com/titzer/wizard-engine/issues/654) |
+| Wizard | `br_on_cast` / `br_on_cast_fail` accept an empty-result target label | `invalid` | [#655](https://github.com/titzer/wizard-engine/issues/655) |
 
 Mature production engines (V8, wasmtime, WasmEdge) are conformant across the corpus and every generated
 probe — the tool does not false-positive on them. Its edge is **maturing / research interpreters**.

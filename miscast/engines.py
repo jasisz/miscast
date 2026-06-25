@@ -140,7 +140,8 @@ def repro_command(engine, wat_path, wasm_path, export, args, wast_path=None):
 
 
 _VALERR = re.compile(r"valid|type mismatch|ill[- ]?typed|mismatch|expected|unexpected|"
-                     r"non-defaultable|undeclared|unknown type|out of bounds|constant", re.I)
+                     r"non-defaultable|undeclared|unknown type|out of bounds|constant|"
+                     r"super[- ]?type|sub[- ]?type|final\b|illegal|defaultable|arity|hierarchy", re.I)
 _EXPORT_RE = re.compile(r'\(export\s+"([^"]+)"\s+\(func\b')
 _FUNCEXPORT_RE = re.compile(r'\(func\s+\(export\s+"([^"]+)"')
 

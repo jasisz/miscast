@@ -123,3 +123,34 @@ retypes / drops a field, extends a `final` type, or exceeds the depth-63 limit) 
 (a block / function result of the wrong type or arity, a non-defaultable `array.new_default`). Each module is
 rejected by `wasm-tools validate` (ground truth); accepting them means ill-typed code runs. Found by the
 `invalid` battery.
+
+---
+
+## Wizard (Ben Titzer's reference engine, in Virgil)
+
+Wizard is conformant across the spec corpus and every generated probe — including the deep adversarial sweep
+(structural canonicalization, packed fields, collector torture, the runtime cast/branch surface) — except
+two gaps in an otherwise-strong validator: it correctly rejects every subtype-rule and operand-stack
+violation, but misses two reference-type cast checks.
+
+### `ref.test` / `ref.cast` accept a target heap type from a different hierarchy — [wizard#654](https://github.com/titzer/wizard-engine/issues/654)
+
+`ref.test` / `ref.cast` validate (and run) with a target heap type in a *different* type hierarchy than the
+operand — e.g. `ref.test (ref extern)` / `ref.cast (ref extern)` on an `(ref i31)` value. The spec requires
+the target and operand to share a top (`any` / `func` / `extern`); these are ill-typed and wasm-tools, V8 and
+wasmtime reject them, but Wizard accepts and runs them (and `ref.test (ref extern)` on an i31 even returns 1,
+claiming the i31 is an extern). `br_on_cast` / `br_on_cast_fail` correctly reject the same cross-hierarchy, so
+the gap is localized to the `ref.test` / `ref.cast` pair. Found by the `mutate` type-graph generator and a
+deep adversarial sweep.
+
+### `br_on_cast` / `br_on_cast_fail` accept a target label with an empty result type — [wizard#655](https://github.com/titzer/wizard-engine/issues/655)
+
+`br_on_cast` forwards the operand to its target label, so the label's type must be non-empty (end in a
+reference type). Wizard does not reject an empty (arity-0) target label; it accepts and runs the module. A
+wrong-typed but non-empty label (`i32`) is correctly rejected, isolating the gap to the empty-label / arity
+requirement. Both `br_on_cast` and `br_on_cast_fail`. Found by a deep adversarial sweep, then folded into
+the `invalid` battery.
+
+> Both gaps reproduce on Talos and wasmz as well, but there they are symptoms of an absent validator (Talos's
+> runner does not validate on load; wasmz [#8](https://github.com/Ray-D-Song/wasmz/issues/8)) rather than
+> distinct bugs — Wizard is the notable case because its validator rejects everything else.
