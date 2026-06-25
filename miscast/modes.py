@@ -94,6 +94,7 @@ def gen_compose(_cases, n):
     return out, []
 
 
+
 def gen_all(cases, n):
     """Run the whole self-checking GC-soundness oracle suite in one pass — `morphism` + `recgroup` +
     `compose` (which itself subsumes the old castbr / externconvert / eh / exnstack corners). None need a

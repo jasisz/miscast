@@ -9,11 +9,14 @@ staying self-checking by one unifying law:
 
 So the oracle is computable BY CONSTRUCTION through any composition. Three program SHAPES cover the family:
 
-  * CHAIN   — a PAYLOAD (array element / struct field / i31 / nested) threaded through a random MIX of 1–3
-              CONDUITS (exception tag / call / global / br_on_cast / tail-call / struct field / table / extern
-              round-trip), optionally STRESSED by a forced GC, read DIRECT or via a LOCAL, for its VALUE (a
-              corrupted payload diverges) or for `ref.is_null` (a null / wrong-type forward diverges — the
-              `castbr` class). Subsumes `castbr`, `externconvert`, and the value cases of `eh`.
+  * CHAIN   — a PAYLOAD (a GC array element / struct field / i31 / nested ref, OR an f32 NaN whose exact bits
+              must survive) threaded through a random MIX of 1–3 CONDUITS (exception tag / call / global /
+              br_on_cast / tail-call / struct field / table / extern round-trip / linear-memory store-load),
+              optionally STRESSED by a forced GC, read DIRECT or via a LOCAL, for its VALUE (a corrupted payload
+              diverges) or for `ref.is_null` (a null / wrong-type forward diverges — the `castbr` class).
+              Subsumes `castbr`, `externconvert`, the value cases of `eh`, and the `nanjet` NaN-conservation
+              probe. (Conduits are filtered by payload: refs skip linear memory; floats skip br_on_cast / table
+              / extern.)
   * NEST    — the payload thrown into a nest of `try_table` handlers with selective tag matching; the nearest
               enclosing handler fires and each adds `level*100000`, so a MIS-ROUTED throw surfaces as a wrong
               value. Subsumes `exnstack`.
@@ -52,6 +55,22 @@ def _payload(seed):
         f"(struct.get $box 0) (i32.const {idx}) (array.get $arr)", elems[idx]
 
 
+_NAN32 = [0x7f801234, 0x7fc01234, 0xffc00000, 0x7fbfffff, 0x7f800001]
+
+
+def _pick(seed):
+    """A payload to carry: usually a GC reference, but ~1/4 of the time an f32 NaN — so the SAME
+    value-preservation law also covers float-payload moves (a NaN re-canonicalized or mangled by a conduit
+    diverges). Returns (kind, ptype, build, read, val, is_ref). The float read reinterprets the f32 back to an
+    i32 so the exact-int compare catches a changed payload; an f32 returns an i32, sidestepping wasmz's i64
+    result truncation."""
+    if (seed // 5) % 4 == 0:
+        bits = _NAN32[(seed // 20) % len(_NAN32)]
+        return "nan32", "f32", f"(f32.reinterpret_i32 (i32.const {bits}))", "(i32.reinterpret_f32)", bits & 0xffffffff, False
+    k, pt, b, r, v = _payload(seed)
+    return k, pt, b, r, v, True
+
+
 def _heap(ptype):
     return ptype.replace("(ref ", "").rstrip(")")        # "(ref $arr)" -> "$arr" ; "(ref i31)" -> "i31"
 
@@ -62,7 +81,8 @@ def _default(ptype):
             "$box": "(struct.new $box (array.new_default $arr 4))", "i31": "(ref.i31 (i32.const 0))"}[h]
 
 
-_FIXED = ("  (type $arr (array (mut i32)))\n"
+_FIXED = ("  (memory 1)\n"
+          "  (type $arr (array (mut i32)))\n"
           "  (type $st (struct (field i32) (field i32)))\n"
           "  (type $box (struct (field (ref $arr))))\n")
 
@@ -97,6 +117,9 @@ def c_call(build, ptype, ctx):
 
 def c_global(build, ptype, ctx):
     i = ctx.fresh()
+    if not ptype.startswith("(ref"):                     # a value type (f32) — no null / no as_non_null
+        ctx.globals.append(f"  (global $g{i} (mut {ptype}) ({ptype}.const 0))")
+        return f"(block (result {ptype}) (global.set $g{i} {build}) (global.get $g{i}))"
     ctx.globals.append(f"  (global $g{i} (mut (ref null {_heap(ptype)})) (ref.null {_heap(ptype)}))")
     return f"(block (result {ptype}) (global.set $g{i} {build}) (ref.as_non_null (global.get $g{i})))"
 
@@ -130,8 +153,20 @@ def c_extern(build, ptype, ctx):
     return f"(ref.cast {ptype} (any.convert_extern (extern.convert_any {build})))"
 
 
+def c_memory(build, ptype, ctx):                          # value-only: refs can't live in linear memory
+    return f"(block (result {ptype}) ({ptype}.store (i32.const 0) {build}) ({ptype}.load (i32.const 0)))"
+
+
 _CONDUITS = [("tag", c_tag), ("call", c_call), ("global", c_global), ("broncast", c_broncast),
-             ("tailcall", c_tailcall), ("field", c_field), ("table", c_table), ("extern", c_extern)]
+             ("tailcall", c_tailcall), ("field", c_field), ("table", c_table), ("extern", c_extern),
+             ("memory", c_memory)]
+_REF_ONLY = {"broncast", "table", "extern"}               # carry a GC reference, not a value
+_VAL_ONLY = {"memory"}                                    # carry a value, not a GC reference
+
+
+def _conduits_for(is_ref):
+    skip = _VAL_ONLY if is_ref else _REF_ONLY
+    return [(n, f) for n, f in _CONDUITS if n not in skip]
 _BONUS = 100000
 _TAGS = ("a", "b", "c")
 
@@ -139,12 +174,12 @@ _TAGS = ("a", "b", "c")
 # ---- SHAPE 1: conduit chain (subsumes castbr / externconvert / eh-value) ----
 def _gen_chain(seed):
     rng = random.Random(seed)
-    kind, ptype, build, read, val = _payload(seed)
-    probe = (seed % 5 == 0)                              # PRESENCE probe: read ref.is_null (0) so a null /
-    if probe:                                            # wrong-type forward (the castbr class) is a VALUE diff
+    kind, ptype, build, read, val, is_ref = _pick(seed)
+    probe = is_ref and (seed % 5 == 0)                   # PRESENCE probe (ref-only): read ref.is_null (0) so a
+    if probe:                                            # null / wrong-type forward (the castbr class) is a VALUE diff
         read, val = "(ref.is_null)", 0
     ctx = _Ctx()
-    chain = [rng.choice(_CONDUITS) for _ in range(1 + seed % 3)]
+    chain = [rng.choice(_conduits_for(is_ref)) for _ in range(1 + seed % 3)]
     for _name, fn in chain:
         build = fn(build, ptype, ctx)
     stressor = (seed % 3 == 0)
@@ -166,7 +201,7 @@ def _gen_chain(seed):
 def _gen_nest(seed):
     rng = random.Random(seed * 2654435761 & 0xffffffff)
     K = 3 + seed % 6
-    kind, ptype, build, read, val = _payload(seed)
+    kind, ptype, build, read, val, _is_ref = _pick(seed)   # a GC ref or an f32 NaN thrown through the nest
     consume = "direct" if (seed // 4) % 2 == 0 else "local"
     subsets = [set(_TAGS)] + [set(rng.sample(_TAGS, rng.randint(1, 3))) for _ in range(1, K)]
     throw_tag = rng.choice(_TAGS)

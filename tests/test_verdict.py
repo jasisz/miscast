@@ -121,8 +121,9 @@ def test_compose():
         parts = label.split("-")
         if parts[1] == "nest":                          # routed exception nest (subsumes exnstack)
             shapes.add("nest"); kinds.add(parts[2])
-            eq(f"compose {s} nest bonus encodes the catcher", int(expected.split()[1]) // _BONUS,
-               int(label.split("@L")[1]))
+            if parts[2] in _KINDS:                       # GC payload: val < BONUS, so val // BONUS == catcher
+                eq(f"compose {s} nest bonus encodes the catcher", int(expected.split()[1]) // _BONUS,
+                   int(label.split("@L")[1]))
         elif parts[1] == "exn":                         # exnref carry / null trap (subsumes eh non-value)
             shapes.add("exn")
             saw_trap = saw_trap or expected == "TRAP"
