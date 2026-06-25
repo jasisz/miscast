@@ -15,7 +15,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
 from .config import SEEDS_DEFAULT, WORK, tool_versions
-from .engines import ENGINES, ENGINE_ORDER
+from .engines import ENGINES, ENGINE_ORDER, wasmtime_has_gc
 from .modes import MODES
 from .mutate import mutate_module
 from .reduce import dedupe_summary
@@ -78,6 +78,12 @@ def main():
         engines[args.sut] = ENGINES[args.sut]
     sut = args.sut
     base_cols = [e for e in ENGINE_ORDER if e in engines and e != sut] + [sut]
+
+    if "wasmtime" in engines and not wasmtime_has_gc():
+        sub = ("the gc-capable `mcr` engine is available as a substitute" if "mcr" in engines
+               else "use a gc-capable wasmtime (the official release binaries) or build runner/ (mcr)")
+        print(f"# WARNING: this `wasmtime` was built without the gc feature — it rejects every GC module, "
+              f"so it is not a GC oracle here; {sub}.", file=sys.stderr)
 
     classes = Counter()
     log, repro_dirs, records = [], [], []

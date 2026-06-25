@@ -20,8 +20,8 @@ python3 -m miscast --sut ENGINE [--oracles LIST] [--mode replay|mutate|smith] [-
 tool it requires is `wasm-tools`; the engines are optional and auto-detected: `node`
 (≥22, for the V8 oracle), `wasmtime`, and the reference interpreter (via `SPEC_WASM`).
 Run from the repo root. The code is a small package (`miscast/`): `config` /
-`toolchain` / `engines` / `verdict` / `runner` / `mutate` / `wast` / `modes` /
-`repro` / `cli`.
+`toolchain` / `engines` / `verdict` / `runner` / `mutate` / `reify` / `wast` /
+`reduce` / `modes` / `repro` / `cli`, plus an optional Rust embedder in `runner/`.
 
 ## Native input: `.wast`
 
@@ -57,6 +57,7 @@ So the tool consumes two corpora in the same format:
 |------------|-----------------------------------------------------------------------|
 | `v8`       | Node ≥22 (WasmGC) + bundled `oracle/v8.js`                            |
 | `wasmtime` | `wasmtime run --invoke` (execution) · `wasmtime compile` (validation); conformance: n/a (see Honest limits) |
+| `mcr`      | the `runner/` wasmtime-crate embedder (`cargo build --release` in `runner/`): **exact result bits**, a **gc-capable** wasmtime even when the PATH `wasmtime` was built without the gc feature, and stateful `--seq`. Auto-detected when built; path overridable via `MC_RUNNER` |
 | `spec`     | the WebAssembly **reference interpreter** (the spec oracle), via env `SPEC_WASM=/path/to/wasm` |
 | `custom`   | **your** interpreter, via env `CUSTOM_CMD="cmd {wat} {wasm} {export}"` — no code change |
 
@@ -166,10 +167,16 @@ interpreters**, and (via `mutate`) **novel ill-typed modules** the big engines h
 
 ## Honest limits
 
-- A **reference** or void result prints differently per engine, so those cases are
-  compared by **status only** (trap vs return), not by value — value comparison runs
-  only when every engine returns a plain integer/float. This keeps the soundness and
-  value classes precise without false divergences on refs.
+- A **GC reference** result is rewritten (in `mutate`/`smith`) to an **i32 fingerprint** of the
+  reference's abstract type — `ref.is_null` + `ref.test` against i31/struct/array/eq + the i31 payload —
+  so a subtype/cast unsoundness that returns a wrong-typed object shows as a value divergence instead of
+  hiding behind a status-only compare. A single **f32/f64** result is rewritten to its reinterpreted
+  integer bits and compared **bit-exactly** (catching sub-ULP miscompiles), with any NaN bit-pattern
+  collapsed to one key. func/extern references and multi-value/v128 results stay status-only. The rewrite
+  runs on every engine identically, so it can never manufacture a divergence.
+- A run prints `N finding(s) in M distinct bug(s)`: dozens of mutation labels over one seed are the same
+  underlying bug, so findings are deduped by base case + divergence shape (`reduce.py`), which also wraps
+  `wasm-tools shrink` for minimizing a single reproducer.
 - **Stateful** segments are run as the whole real `.wast` file, natively and in order
   on the reference interpreter, so state is preserved. (wasmtime's `wast` runner
   string-matches `assert_invalid` reason text and so fails official files merely for
@@ -197,6 +204,7 @@ interpreters**, and (via `mutate`) **novel ill-typed modules** the big engines h
 |--------------|------------------------------------------------------------------|
 | `V8_ORACLE`  | bundled `oracle/v8.js`                                            |
 | `NODE`       | newest WasmGC-capable node (≥22) on PATH or in `~/.nvm`          |
+| `MC_RUNNER`  | path to the `mcr` embedder binary (default `runner/target/release/mc-runner`; build it with `cargo build --release` in `runner/`) |
 | `SPEC_WASM`  | unset — path to the WebAssembly reference interpreter (`spec` oracle) |
 | `CUSTOM_CMD` | unset — wire the interpreter under test as the `custom` engine    |
 | `CUSTOM_VALIDATE_CMD` | unset — optional `cmd {wat} {wasm}` exposing the SUT's validate/load step (rc 0 = accepted) for full validation-differential coverage |

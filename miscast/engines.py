@@ -43,6 +43,47 @@ def be_wasmtime(wat, wasm, export, args):
     return "OK " + out if out else "OK _"
 
 
+MC_RUNNER = os.environ.get("MC_RUNNER") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runner", "target", "release", "mc-runner")
+
+
+def be_mc_runner(wat, wasm, export, args):
+    """The mc-runner embedder (wasmtime crate): EXACT result bits, and a gc-capable wasmtime even when the
+    PATH `wasmtime` was built without the gc feature (Homebrew's is). Parses its JSON into a verdict."""
+    import json
+    av = []
+    for t, v in args:
+        if t in ("i32", "i64"):                          # CLI can't pass float/ref args (parse_invoke skips them)
+            av += ["--arg", f"{t}:{v}"]
+    r = _run([MC_RUNNER, wasm, "--invoke", export] + av)
+    line = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
+    try:
+        j = json.loads(line)
+    except ValueError:
+        return "ERR"
+    if not j.get("ok"):
+        return "TRAP" if j.get("trap") else "UNSUP"
+    res = j.get("results", [])
+    if len(res) != 1:
+        return "OK _"                                    # void or multi-value -> status only
+    kind, _, val = res[0].partition(":")
+    if kind in ("i32", "i64"):
+        return "OK " + val
+    if kind in ("f32", "f64"):
+        return "OK _"                                    # raw float bits would clash with wasmtime's text print
+    return "OK ref" if kind.startswith("ref") else "OK _"
+
+
+def wasmtime_has_gc():
+    """Whether the PATH `wasmtime` was built with the gc cargo feature. A build without it (Homebrew's)
+    silently rejects every GC module, so wasmtime contributes nothing as a GC oracle without saying so."""
+    if not shutil.which("wasmtime"):
+        return False
+    r = _run(["wasmtime", "run", "-W", "gc=y", os.devnull])
+    both = (r.stdout + r.stderr).lower()
+    return not ("unknown" in both and "gc" in both)      # "unknown -W / --wasm option: gc" => no gc feature
+
+
 def make_be_cmd(tmpl):
     """A backend for any interpreter, driven by a command template with {wat}/{wasm}/{export}."""
     def be(wat, wasm, export, args):
@@ -87,6 +128,9 @@ def repro_command(engine, wat_path, wasm_path, export, args, wast_path=None):
     if engine == "wasmtime":
         return " ".join(["wasmtime", "run", "--invoke", export,
                          "-W", "function-references=y,gc=y", wasm_path] + a)
+    if engine == "mcr":
+        return " ".join([MC_RUNNER, wasm_path, "--invoke", export]
+                        + sum([["--arg", f"{t}:{v}"] for t, v in args if t in ("i32", "i64")], []))
     if engine == "spec":
         return f"{SPEC_WASM or '$SPEC_WASM'} {wast_path or '<module+invoke>.wast'}"
     if engine == "custom":
@@ -207,6 +251,8 @@ def detect_engines():
         eng["v8"] = be_v8
     if shutil.which("wasmtime"):
         eng["wasmtime"] = be_wasmtime
+    if os.path.exists(MC_RUNNER):                        # the wasmtime-crate embedder (exact bits, always gc-capable)
+        eng["mcr"] = be_mc_runner
     if SPEC_WASM and os.path.exists(SPEC_WASM):          # the WebAssembly reference interpreter
         eng["spec"] = be_spec
     if os.environ.get("CUSTOM_CMD"):                     # any interpreter under test, no code change
@@ -215,4 +261,4 @@ def detect_engines():
 
 
 ENGINES = detect_engines()
-ENGINE_ORDER = ["v8", "wasmtime", "spec", "custom"]
+ENGINE_ORDER = ["v8", "wasmtime", "mcr", "spec", "custom"]
