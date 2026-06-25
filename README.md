@@ -20,8 +20,8 @@ python3 -m miscast --sut ENGINE [--oracles LIST] [--mode replay|mutate|smith] [-
 tool it requires is `wasm-tools`; the engines are optional and auto-detected: `node`
 (≥22, for the V8 oracle), `wasmtime`, and the reference interpreter (via `SPEC_WASM`).
 Run from the repo root. The code is a small package (`miscast/`): `config` /
-`toolchain` / `engines` / `verdict` / `runner` / `mutate` / `reify` / `wast` /
-`reduce` / `modes` / `repro` / `cli`, plus an optional Rust embedder in `runner/`.
+`toolchain` / `engines` / `verdict` / `runner` / `mutate` / `reify` / `dualrail` /
+`wast` / `reduce` / `modes` / `repro` / `cli`, plus an optional Rust embedder in `runner/`.
 
 ## Native input: `.wast`
 
@@ -84,6 +84,37 @@ but flagged only with `--overtrap`.
 | `replay` | run the file's command stream — three sections: **execution** (value/trap differential, assert as oracle), **validation** (`assert_invalid`), **conformance** (stateful scripts run natively, state preserved) |
 | `mutate` | break a **type relationship** in each seed — re-point an op's type slot, drop / flip a supertype edge, reorder a rec group, toggle ref nullability or `final` — then route each variant by validity: valid ones to the execution differential, **ill-typed ones to the validation differential** (does the SUT *reject* them?). A SUT that accepts a generated ill-typed module is unsound. |
 | `smith`  | random valid GC modules via `wasm-tools smith` — breadth baseline / drop-in    |
+| `dualrail` | self-checking **shadow-GC** programs: run one object graph through real Wasm GC *and* a hand-rolled linear-memory model of the same graph, and check they agree (see below) |
+
+## The dual-rail shadow-GC oracle (`--mode dualrail`)
+
+A GC reference returned by a function is opaque, so the value-differential can only compare it by status —
+blind to the wrong-typed object an unsound cast hands back. `reify` (below) turns that reference into a
+scalar fingerprint; **dual-rail** goes the whole way: it runs an entire object graph through real Wasm GC
+**and** through a hand-rolled model of the same graph in linear memory, then checks they agree.
+
+One random program is emitted into two worlds from the same data-segment "tape", so they are equivalent by
+construction:
+
+- **real** uses actual GC — a `$base` / `$sub` / `$sub2` subtype hierarchy, `struct.new` / `set` / `get`,
+  `ref.test` / `ref.cast` / `ref.eq`, a funcref-type test, an `i31` round-trip, churn that forces a
+  collection, and a post-GC field mutation;
+- **shadow** rebuilds the identical graph by hand in linear memory (tag / id / next-index / fields per
+  slot) with plain `i32` loads and stores and no GC at all.
+
+Both fold the same rolling checksum over the traversal — ids, subtype-test outcomes, the right field,
+`ref.eq` identity, the followed reference's id, the funcref-type test, an `i31` value. The exported `check`
+returns `real - shadow`: **0** means the engine's GC agrees with the trustworthy linear-memory model;
+**nonzero** means a GC bug — lowering, a write barrier, relocation under a moving collector, object
+identity, or a subtype / cast check — with the failing fold step as the witness.
+
+The oracle is self-contained: the linear-memory shadow cannot be wrong about GC because it does not use GC,
+so a single engine returning nonzero is a self-evident bug, no second engine required. A known-correct
+engine returning 0 also confirms the two worlds are genuinely equivalent, so a nonzero elsewhere is that
+engine's defect, not a generator artifact — the same check caught a wrong assumption about structural type
+canonicalization while this was being built. It found the funcref subtype-check bug below (`ref.test (ref
+$ft)` on a concrete funcref): `wasmtime`, `WasmEdge` and `V8` all return 0 on the generated programs, and
+the value-differential surfaces a SUT that does not.
 
 ## Two ways the bug shows up
 
@@ -160,6 +191,11 @@ Each verified against the reference interpreter as ground truth, on the latest e
   reference interpreter all accept and run it. A plain `funcref` global hits the same path. Found by
   the `mutate` type-graph generator over the GC corpus.
   [Ray-D-Song/wasmz#4](https://github.com/Ray-D-Song/wasmz/issues/4)
+- **wasmz** — `ref.test` / `ref.cast` against a concrete function type never matches a non-null funcref
+  (it matches only the abstract `func` heap type), so `ref.test (ref $ft) (ref.func $fa)` returns 0 where
+  the funcref is exactly `$ft`; wasm-tools, wasmtime, WasmEdge and V8 all return 1, differing by a single
+  byte (the heap-type immediate). Found by the **dual-rail shadow-GC oracle**.
+  [Ray-D-Song/wasmz#5](https://github.com/Ray-D-Song/wasmz/issues/5)
 
 Mature production engines (V8, wasmtime) are conformant across both the corpus and the generated
 mutations — the tool does not false-positive on them. Its edge is **maturing / research

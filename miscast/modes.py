@@ -3,11 +3,13 @@
   replay   the cases as-is (the assert is a fallback oracle / corroboration)
   mutate   each module's type slot swept across the subtyping matrix (assert dropped)
   smith    random valid GC modules via `wasm-tools smith` (breadth baseline)
+  dualrail self-checking shadow-GC programs (real Wasm GC vs a hand-rolled linear-memory model)
 """
 import os
 
 from .config import WORK
 from .toolchain import _run
+from .dualrail import gen as dualrail_gen
 from .mutate import mutate_module
 
 
@@ -45,4 +47,17 @@ def gen_smith(_cases, n):
     return out, []
 
 
-MODES = {"replay": gen_replay, "mutate": gen_mutate, "smith": gen_smith}
+def gen_dualrail(_cases, n):
+    """Self-checking dual-rail shadow-GC programs (see dualrail.py): each runs one object graph through
+    real Wasm GC and through a hand-rolled linear-memory shadow, and `check` returns real_hash - shadow_hash.
+    The correct result is 0 on every conformant engine, so the assert `OK 0` is the per-program oracle and a
+    SUT returning nonzero (a GC lowering / cast / identity bug) shows as a VALUE divergence — no second
+    engine required. A reference engine returning 0 confirms the two worlds are genuinely equivalent."""
+    out = []
+    for i in range(n):
+        K = [12, 16, 24, 32, 48][i % 5]
+        out.append((f"dualrail{i}", dualrail_gen(i, K), "check", [], "OK 0", "int"))
+    return out, []
+
+
+MODES = {"replay": gen_replay, "mutate": gen_mutate, "smith": gen_smith, "dualrail": gen_dualrail}
