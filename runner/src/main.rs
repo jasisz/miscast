@@ -15,7 +15,84 @@
 
 use std::env;
 use std::process::exit;
-use wasmtime::{Collector, Config, Engine, Instance, Module, OptLevel, Store, Val};
+use wasmtime::{Collector, Config, Engine, Instance, Module, OptLevel, Rooted, RootScope, Store, Val};
+
+fn make_config(collector: &str, opt: &str) -> Config {
+    let mut config = Config::new();
+    config.wasm_gc(true);
+    config.wasm_function_references(true);
+    config.wasm_reference_types(true);
+    config.collector(match collector {
+        "null" => Collector::Null,
+        "copying" => Collector::Copying,
+        _ => Collector::DeferredReferenceCounting,
+    });
+    config.cranelift_opt_level(match opt {
+        "0" => OptLevel::None,
+        "s" => OptLevel::SpeedAndSize,
+        _ => OptLevel::Speed,
+    });
+    config
+}
+
+/// Host-boundary GC rooting stress: the embedder holds a root (ManuallyRooted) to a GC struct across a
+/// forced collection while it allocates garbage — the surface table_ops (in-wasm) never touches and where
+/// three historical CVEs lived (GHSA-4873/5fhj/gwc9), holding an OwnedRooted (the new v46 lifecycle).
+/// `func` must return a (ref struct) whose field 0 is an i32 id. We root the first object, churn
+/// allocations + Store::gc(), then check the root still reads the
+/// same id and still ref-eqs a second root to it. A wrong id / failed ref_eq / abort under ASan = a bug.
+fn host_gc_stress(wasm: &str, func: &str, collector: &str, rounds: usize) -> anyhow::Result<String> {
+    let engine = Engine::new(&make_config(collector, "2"))?;
+    let module = Module::from_file(&engine, wasm)?;
+    let mut store = Store::new(&engine, ());
+    let instance = Instance::new(&mut store, &module, &[])?;
+    let mk = instance
+        .get_func(&mut store, func)
+        .ok_or_else(|| anyhow::anyhow!("no exported function {func}"))?;
+
+    let mut res = vec![Val::I32(0)];
+    // allocate and manually-root the kept object (outlives any RootScope, survives GCs)
+    let (kept, kept2, id0) = {
+        let mut scope = RootScope::new(&mut store);
+        mk.call(&mut scope, &[], &mut res)?;
+        let anyref = match res[0] {
+            Val::AnyRef(Some(r)) => r,
+            _ => anyhow::bail!("{func} did not return a non-null gc reference"),
+        };
+        let sref = anyref
+            .as_struct(&mut scope)?
+            .ok_or_else(|| anyhow::anyhow!("returned reference is not a struct"))?;
+        let id0 = match sref.field(&mut scope, 0)? {
+            Val::I32(n) => n,
+            _ => anyhow::bail!("struct field 0 is not i32"),
+        };
+        (sref.to_owned_rooted(&mut scope)?, sref.to_owned_rooted(&mut scope)?, id0)
+    };
+
+    // churn: allocate garbage and force a collection each round (copying relocates the kept object)
+    for _ in 0..rounds {
+        {
+            let mut scope = RootScope::new(&mut store);
+            mk.call(&mut scope, &[], &mut res)?; // garbage, freed when the scope drops
+        }
+        store.gc(None)?;
+    }
+
+    // the manually-held root must still read its id and still be the same object as the second root
+    let mut scope = RootScope::new(&mut store);
+    let k = kept.to_rooted(&mut scope);
+    let k2 = kept2.to_rooted(&mut scope);
+    let after = match k.field(&mut scope, 0)? {
+        Val::I32(n) => n,
+        _ => anyhow::bail!("field 0 not i32 after gc"),
+    };
+    let same = Rooted::ref_eq(&scope, &k, &k2)?;
+    let survived = after == id0 && same;
+    Ok(format!(
+        "{{\"ok\":true,\"mode\":\"host-gc-stress\",\"collector\":\"{collector}\",\"rounds\":{rounds},\
+         \"id0\":{id0},\"after\":{after},\"ref_eq\":{same},\"survived\":{survived}}}"
+    ))
+}
 
 fn parse_val(s: &str) -> Option<Val> {
     let (t, v) = s.split_once(':')?;
@@ -47,21 +124,7 @@ fn json_escape(s: &str) -> String {
 }
 
 fn run(wasm: &str, funcs: &[String], args: &[Val], collector: &str, opt: &str) -> anyhow::Result<Vec<Vec<Val>>> {
-    let mut config = Config::new();
-    config.wasm_gc(true);
-    config.wasm_function_references(true);
-    config.wasm_reference_types(true);
-    config.collector(match collector {
-        "null" => Collector::Null,
-        "copying" => Collector::Copying,
-        _ => Collector::DeferredReferenceCounting,
-    });
-    config.cranelift_opt_level(match opt {
-        "0" => OptLevel::None,
-        "s" => OptLevel::SpeedAndSize,
-        _ => OptLevel::Speed,
-    });
-    let engine = Engine::new(&config)?;
+    let engine = Engine::new(&make_config(collector, opt))?;
     let module = Module::from_file(&engine, wasm)?;
     let mut store = Store::new(&engine, ());
     let instance = Instance::new(&mut store, &module, &[])?; // miscast modules import nothing
@@ -85,11 +148,24 @@ fn main() {
     let mut args: Vec<Val> = Vec::new();
     let mut collector = "drc".to_string();
     let mut opt = "2".to_string();
+    let mut host_stress: Option<String> = None;
+    let mut rounds = 200usize;
     let mut i = 1;
     while i < argv.len() {
+        let next = argv.get(i + 1).cloned(); // bounds-safe: a flag missing its value must not panic
         match argv[i].as_str() {
             "--invoke" => {
-                funcs.push(argv[i + 1].clone());
+                if let Some(f) = next {
+                    funcs.push(f);
+                }
+                i += 2;
+            }
+            "--host-gc-stress" => {
+                host_stress = next;
+                i += 2;
+            }
+            "--rounds" => {
+                rounds = next.and_then(|s| s.parse().ok()).unwrap_or(200);
                 i += 2;
             }
             "--seq" => {
@@ -100,17 +176,21 @@ fn main() {
                 }
             }
             "--arg" => {
-                if let Some(v) = parse_val(&argv[i + 1]) {
+                if let Some(v) = next.as_deref().and_then(parse_val) {
                     args.push(v);
                 }
                 i += 2;
             }
             "--collector" => {
-                collector = argv[i + 1].clone();
+                if let Some(c) = next {
+                    collector = c;
+                }
                 i += 2;
             }
             "--opt" => {
-                opt = argv[i + 1].clone();
+                if let Some(o) = next {
+                    opt = o;
+                }
                 i += 2;
             }
             s if !s.starts_with("--") => {
@@ -120,13 +200,28 @@ fn main() {
             _ => i += 1,
         }
     }
-    let (wasm, funcs) = match (wasm, funcs.is_empty()) {
-        (Some(w), false) => (w, funcs),
-        _ => {
-            eprintln!("usage: mc-runner <module.wasm> --invoke FUNC [--arg TYPE:VAL ...] [--collector C] [--opt L]");
+    let wasm = match wasm {
+        Some(w) => w,
+        None => {
+            eprintln!("usage: mc-runner <module.wasm> --invoke FUNC | --host-gc-stress FUNC [--collector C] [--opt L]");
             exit(2);
         }
     };
+    if let Some(func) = host_stress {
+        match host_gc_stress(&wasm, &func, &collector, rounds) {
+            Ok(s) => println!("{s}"),
+            Err(e) => {
+                let msg = json_escape(&e.to_string());
+                println!("{{\"ok\":false,\"error\":\"{msg}\"}}");
+                exit(1);
+            }
+        }
+        return;
+    }
+    if funcs.is_empty() {
+        eprintln!("usage: mc-runner <module.wasm> --invoke FUNC | --host-gc-stress FUNC [--collector C] [--opt L]");
+        exit(2);
+    }
     match run(&wasm, &funcs, &args, &collector, &opt) {
         Ok(all) => {
             let blocks: Vec<String> = all
