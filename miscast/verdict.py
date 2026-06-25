@@ -45,6 +45,25 @@ def _fkey(v):
         return None
 
 
+def _floatbits_key(v, bits):
+    """Comparison key for a float result reinterpreted to its integer bits (see reify.bitcast_float_result):
+    an EXACT bit compare that catches sub-ULP miscompiles the 6-decimal _fkey hides — but any NaN
+    bit-pattern collapses to one key, since the spec leaves a NaN's payload nondeterministic. None if the
+    value isn't a plain integer."""
+    p = v.split()
+    if p[0] != "OK" or len(p) != 2 or p[1] in ("_", "ref"):
+        return None
+    try:
+        n = int(p[1], 0) & ((1 << bits) - 1)
+    except ValueError:
+        return None
+    exp = 0x7F800000 if bits == 32 else 0x7FF0000000000000
+    man = 0x7FFFFF if bits == 32 else 0xFFFFFFFFFFFFF
+    if (n & exp) == exp and (n & man) != 0:
+        return "nan"                                       # spec-nondeterministic NaN payload
+    return n
+
+
 def classify_validation(verdicts, sut):
     """Validation-differential: every oracle REJECTs an invalid module; the SUT must too.
     SUT ACCEPT where the oracles agree REJECT = the module ran/loaded unsound."""
@@ -110,6 +129,8 @@ def classify(verdicts, sut, expected, rtype="int"):
         # (rtype None) is compared by status only.
         keyfn = ((lambda v: _ikey(v, 32)) if rtype == "int"
                  else (lambda v: _ikey(v, 64)) if rtype == "int64"
+                 else (lambda v: _floatbits_key(v, 32)) if rtype == "f32bits"
+                 else (lambda v: _floatbits_key(v, 64)) if rtype == "f64bits"
                  else _fkey if rtype == "float" else None)
         if keyfn:
             ovals = {keyfn(v) for v in runnable if keyfn(v) is not None}

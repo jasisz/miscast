@@ -10,7 +10,7 @@ import glob
 import os
 import re
 
-from .reify import reify_ref_result
+from .reify import bitcast_float_result, reify_ref_result
 from .toolchain import u32
 
 ARG_RE = re.compile(r"\((i32|i64)\.const\s+(-?(?:0x[0-9a-fA-F]+|\d+))\)")
@@ -78,10 +78,15 @@ def reified_case(module, export, expected):
 
     The rewritten module is run by every engine identically, so the fingerprint can never manufacture a
     divergence; the spec assert no longer matches the i32, so it is dropped (the engines are the oracle)."""
+    res = _sig_results(module, export)
+    if res in (["f32"], ["f64"]):                          # bit-exact float: reinterpret to integer bits
+        new, width = bitcast_float_result(module, export)
+        if width:
+            return new, width + "bits", None               # "f32bits" / "f64bits" -> NaN-safe exact compare
     rt = result_type(module, export)
     if rt is not None:
         return module, rt, expected
-    new, ok = reify_ref_result(module, export)
+    new, ok = reify_ref_result(module, export)             # GC reference -> abstract-type fingerprint
     if ok:
         return new, "int", None
     return module, None, expected

@@ -18,6 +18,7 @@ from .config import SEEDS_DEFAULT, WORK, tool_versions
 from .engines import ENGINES, ENGINE_ORDER
 from .modes import MODES
 from .mutate import mutate_module
+from .reduce import dedupe_summary
 from .toolchain import prepare
 from .wast import load_corpus, load_script_corpus
 from .runner import differential, validation_differential, conformance_differential
@@ -79,7 +80,7 @@ def main():
     base_cols = [e for e in ENGINE_ORDER if e in engines and e != sut] + [sut]
 
     classes = Counter()
-    log, repro_dirs = [], []
+    log, repro_dirs, records = [], [], []
 
     def section(title, results, cols):
         """Print one differential section; tally severity; collect findings + reproducers."""
@@ -95,6 +96,7 @@ def main():
             print(f"{nm:44} {row} {_cell(expected or '-', 8):8} {verdict}{'   <<<' if counted else ''}")
             if counted:
                 log.append(f"[{title}] {nm}: {verdicts} -> {verdict}")
+                records.append((nm, dict(verdicts), verdict))
                 repro_dirs.append(write_repro(nm, repro, verdicts, expected, cols))
 
     def pool(label, fn, items):
@@ -187,5 +189,8 @@ def main():
     if log:
         with open(os.path.join(WORK, "divergences.txt"), "w") as f:
             f.write("\n".join(log) + "\n")
-        print(f"# {len(log)} finding(s) -> {os.path.join(WORK, 'divergences.txt')}")
+        body, total, distinct = dedupe_summary(records)
+        print(f"# {total} finding(s) in {distinct} distinct bug(s) "
+              f"(base case x mutation labels collapsed) -> {os.path.join(WORK, 'divergences.txt')}")
+        print(body)
         print(f"# reproducers   -> {os.path.join(WORK, 'repro')}/  ({len(repro_dirs)} dir(s))")

@@ -152,3 +152,41 @@ def reify_ref_result(module, export):
     header.append("(local $__rf (ref null any))")
     new_func = "(func " + " ".join(header + body) + " local.set $__rf " + _FINGERPRINT + ")"
     return module[:s] + new_func + module[e:], True
+
+
+def bitcast_float_result(module, export):
+    """If `export` returns a single f32/f64, rewrite it to return the reinterpreted integer bits so the
+    value-differential compares BIT-EXACTLY — the 6-decimal text compare in verdict._fkey misses sub-ULP
+    miscompiles (a JIT codegen bug that is off by one ULP prints identically). Returns (module, 'f32'|'f64')
+    naming the source width, or (module, None). NaN canonicalization happens at the comparison key (a NaN
+    bit-pattern has a spec-nondeterministic payload), so this never manufactures a divergence on NaN."""
+    loc = _find_func(module, export)
+    if not loc:
+        return module, None
+    s, e = loc
+    head, toks = _tokens(module[s:e])
+    if head != "func":
+        return module, None
+    header, body, width, found, in_header = [], [], None, False, True
+    for k, tok in enumerate(toks):
+        if in_header:
+            is_name = (k == 0 and not tok.startswith("(") and tok.startswith("$"))
+            h = _head(tok)
+            if is_name or h in _HEADER_HEADS:
+                if h == "result":
+                    inner = tok[len("(result"):].strip()
+                    inner = inner[:-1].strip() if inner.endswith(")") else inner
+                    if found or inner not in ("f32", "f64"):
+                        return module, None                # multiple results, or not a lone float
+                    width, found = inner, True
+                    header.append("(result i32)" if inner == "f32" else "(result i64)")
+                    continue
+                header.append(tok)
+                continue
+            in_header = False
+        body.append(tok)
+    if not found or not body or any(re.search(r"\breturn\b", t) for t in body):
+        return module, None
+    op = "i32.reinterpret_f32" if width == "f32" else "i64.reinterpret_f64"
+    new_func = "(func " + " ".join(header + body) + " " + op + ")"
+    return module[:s] + new_func + module[e:], width

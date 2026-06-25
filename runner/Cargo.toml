@@ -1,0 +1,16 @@
+[package]
+name = "mc-runner"
+version = "0.1.0"
+edition = "2021"
+description = "A wasmtime embedder runner for miscast: programmatic config, exact result bits, trap capture."
+
+[[bin]]
+name = "mc-runner"
+path = "src/main.rs"
+
+[dependencies]
+wasmtime = "46"
+anyhow = "1"
+
+[profile.release]
+opt-level = 2

@@ -97,6 +97,39 @@ def test_fingerprint_valid_and_discriminates():
     eq("null fingerprints as null", fps["null"], "1")
 
 
+FLOAT64 = '(module (func (export "f") (result f64) (f64.const 0.1)))'
+FLOAT32 = '(module (func (export "f") (result f32) (f32.const 1.5)))'
+
+
+def test_bitcast_float():
+    from miscast.reify import bitcast_float_result
+    new, w = bitcast_float_result(FLOAT64, "f")
+    eq("f64 bitcast width", w, "f64")
+    eq("f64 result becomes i64", "(result i64)" in new, True)
+    eq("reinterpret appended", "i64.reinterpret_f64" in new, True)
+    eq("f32 bitcast width", bitcast_float_result(FLOAT32, "f")[1], "f32")
+    eq("int is not bitcast", bitcast_float_result(INT, "f")[1], None)
+    eq("ref is not bitcast", bitcast_float_result(STRUCT, "f")[1], None)
+
+
+def test_floatbits_key():
+    from miscast.verdict import _floatbits_key
+    import struct
+    b0 = struct.unpack("<q", struct.pack("<d", 1.0))[0]
+    b1 = struct.unpack("<q", struct.pack("<d", 1.0000000000000002))[0]   # +1 ULP
+    eq("sub-ULP is distinguished", _floatbits_key(f"OK {b0}", 64) != _floatbits_key(f"OK {b1}", 64), True)
+    eq("qNaN and a different NaN payload share a key", _floatbits_key("OK 9221120237041090560", 64),
+       _floatbits_key("OK 9221120237041090561", 64))
+    eq("a NaN key is the nan sentinel", _floatbits_key("OK 9221120237041090560", 64), "nan")
+
+
+def test_reified_case_float_is_bit_exact():
+    m, rt, exp = reified_case(FLOAT64, "f", "RET")
+    eq("f64 result routes to f64bits", rt, "f64bits")
+    eq("f64 module is bitcast", "i64.reinterpret_f64" in m, True)
+    eq("f64 expected is dropped", exp, None)
+
+
 if __name__ == "__main__":
     tests = [f for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     for t in tests:
