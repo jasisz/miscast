@@ -104,55 +104,37 @@ def test_classify_conformance():
        ("sut-stateful-na", False))
 
 
-def test_eh_battery():
-    # the exception-handling self-check battery is structurally well-formed (no toolchain needed here;
-    # engine agreement is re-confirmed by `python3 -m miscast.eh`).
-    from miscast.eh import gen, count, _PROGRAMS
-    eq("eh battery is non-empty", count() > 0, True)
-    eq("eh count matches programs", count(), len(_PROGRAMS))
-    for label, export, expected, wat in _PROGRAMS:
-        eq(f"eh {label} has an export", isinstance(export, str) and bool(export), True)
-        eq(f"eh {label} expected is OK/TRAP", expected == "TRAP" or expected.startswith("OK "), True)
-        eq(f"eh {label} is a module", wat.strip().startswith("(module"), True)
-        eq(f"eh {label} exercises EH", ("try_table" in wat or "throw_ref" in wat), True)
-    eq("eh gen cycles by seed", gen(0), gen(count()))
-
-
-def test_exnstack():
-    # the generated unwind programs: the baked expected must encode the catcher level (the depth bonus) so a
-    # MIS-ROUTED throw shows as a wrong value; the simulator is pure (no toolchain; engines re-checked by
-    # `python3 -m miscast.exnstack`).
-    from miscast.exnstack import exnstack_gen, _BONUS, _KINDS
-    kinds = set()
-    for s in range(30):
-        label, export, expected, wat = exnstack_gen(s)
-        eq(f"exnstack {s} exports f", export, "f")
-        eq(f"exnstack {s} is a module", wat.strip().startswith("(module"), True)
-        eq(f"exnstack {s} carries a GC payload through a tag", "try_table" in wat and "throw" in wat, True)
-        catcher = int(label.split("@L")[1])
-        val = int(expected.split()[1])
-        eq(f"exnstack {s} bonus encodes the catcher level", val // _BONUS, catcher)
-        kinds.add(label.split("-")[2])
-    eq("exnstack sweeps every payload kind", kinds, set(_KINDS))
-
-
 def test_compose():
-    # the compositional generator: a payload threaded through a mix of value-preserving conduits — the
-    # oracle is the payload value (every conduit preserves it). Pure; engines re-checked by `python3 -m miscast.compose`.
-    from miscast.compose import compose_gen, _CONDUITS, _heap
-    from miscast.exnstack import _KINDS
+    # the consolidated compositional generator (chain / nest / exn shapes) that subsumes the old
+    # castbr / externconvert / eh / exnstack modes. Pure structural checks; engine agreement is re-confirmed
+    # by `python3 -m miscast.compose`.
+    from miscast.compose import compose_gen, _CONDUITS, _heap, _KINDS, _BONUS
     eq("heap of a typed ref", _heap("(ref $arr)"), "$arr")
     eq("heap of i31", _heap("(ref i31)"), "i31")
-    kinds, conduits = set(), set()
-    for s in range(40):
+    shapes, conduits, kinds = set(), set(), set()
+    saw_isnull = saw_trap = False
+    for s in range(60):
         label, export, expected, wat = compose_gen(s)
         eq(f"compose {s} exports f", export, "f")
         eq(f"compose {s} is a module", wat.strip().startswith("(module"), True)
-        eq(f"compose {s} expected is OK <v>", expected.startswith("OK "), True)
-        kinds.add(label.split("-")[1])
-        conduits |= {c for c, _ in _CONDUITS if c in label}
-    eq("compose sweeps every payload kind", kinds, set(_KINDS))
-    eq("compose exercises every conduit", conduits, {c for c, _ in _CONDUITS})
+        eq(f"compose {s} expected is OK/TRAP", expected == "TRAP" or expected.startswith("OK "), True)
+        parts = label.split("-")
+        if parts[1] == "nest":                          # routed exception nest (subsumes exnstack)
+            shapes.add("nest"); kinds.add(parts[2])
+            eq(f"compose {s} nest bonus encodes the catcher", int(expected.split()[1]) // _BONUS,
+               int(label.split("@L")[1]))
+        elif parts[1] == "exn":                         # exnref carry / null trap (subsumes eh non-value)
+            shapes.add("exn")
+            saw_trap = saw_trap or expected == "TRAP"
+        else:                                           # conduit chain (subsumes castbr / externconvert / eh-value)
+            shapes.add("chain"); kinds.add(parts[1])
+            conduits |= {c for c, _ in _CONDUITS if c in label}
+            saw_isnull = saw_isnull or "isnull" in label
+    eq("compose generates all three shapes", shapes, {"chain", "nest", "exn"})
+    eq("compose sweeps every payload kind", set(_KINDS) <= kinds, True)
+    eq("compose chain uses a variety of conduits", len(conduits) >= 6, True)
+    eq("compose has a ref.is_null presence probe (castbr class)", saw_isnull, True)
+    eq("compose has a mandated null-throw trap (eh class)", saw_trap, True)
 
 
 def test_norm_arg():

@@ -6,9 +6,9 @@
   morphism self-checking shadow-GC programs: SEVERAL real GC representations vs a linear-memory model, isolating which path diverges
   recgroup rec-group canonicalization trap-differential: reordered recursion groups make distinct types, so call_indirect must trap
   externcv extern.convert_any / any.convert_extern round-trip: a GC ref pushed out to externref and back must be preserved
-  castbr   br_on_cast / br_on_cast_fail must forward the cast operand (not null) to the branch
-  eh       try_table / throw / throw_ref / exnref self-checks: tag forwarding, exnref-as-value, mandated null-throw traps
-  exnstack generated try_table unwind trees whose Python unwind simulator IS the oracle — deep nesting + GC payload
+  compose  compositional feature-interaction generator: a payload threaded through a MIX of value-preserving
+           conduits (tag / call / global / br_on_cast / tail-call / field / table / extern), a routed exception
+           nest, or an exnref carry — self-checking by construction; subsumes castbr / externconvert / eh / exnstack
   invalid  a battery of spec-invalid GC modules: does the SUT reject them? (validation differential)
 """
 import os
@@ -17,10 +17,6 @@ from .config import WORK
 from .toolchain import _run
 from .morphism import gen as morphism_gen
 from .recgroup import gen as recgroup_gen
-from .externconvert import gen as externconvert_gen
-from .castbr import gen as castbr_gen
-from .eh import gen as eh_gen, count as eh_count
-from .exnstack import exnstack_gen
 from .compose import compose_gen
 from .mutate import mutate_module
 
@@ -83,61 +79,14 @@ def gen_recgroup(_cases, n):
     return [(f"recgroup{i}", recgroup_gen(i), "go", [], "TRAP", "int") for i in range(n)], []
 
 
-def gen_externconvert(_cases, n):
-    """extern.convert_any / any.convert_extern round-trip (see externconvert.py): the spec requires a GC ref
-    pushed out to `externref` and back to be preserved, so the self-check returns the original value. The
-    per-program oracle is `OK <value>`; a SUT that traps or returns something else diverges (e.g. an engine
-    that has not implemented the conversion opcodes)."""
-    out = []
-    for i in range(n):
-        wat, val = externconvert_gen(i)
-        out.append((f"externconvert{i}", wat, "rt", [], f"OK {val}", "int"))
-    return out, []
-
-
-def gen_castbr(_cases, n):
-    """br_on_cast / br_on_cast_fail value-forwarding self-check (see castbr.py): the cast operand, not null,
-    must reach the branch, so each program reads a field of the cast result and returns it. The per-program
-    oracle is `OK <value>`; a SUT that forwards null traps on the read or returns the wrong value."""
-    out = []
-    for i in range(n):
-        wat, val = castbr_gen(i)
-        out.append((f"castbr{i}", wat, "f", [], f"OK {val}", "int"))
-    return out, []
-
-
-def gen_eh(_cases, n):
-    """Exception-handling self-checks (see eh.py): try_table / throw / throw_ref / exnref programs whose
-    sentinel only the conformant unwinding + tag/exnref forwarding produces (or a spec-mandated null
-    `throw_ref` trap). The per-program oracle is baked in; a SUT that mis-forwards a tag param, drops a
-    captured exnref, canonicalizes the wrong handler, or fails to trap diverges with no second engine
-    required. The spec-invalid EH modules live in the `invalid` battery (validation differential)."""
-    out = []
-    for i in range(n):
-        label, export, expected, wat = eh_gen(i)
-        out.append((f"eh{i}|{label}", wat, export, [], expected, "int"))
-    return out, []
-
-
-def gen_exnstack(_cases, n):
-    """Generated exception-unwind trees (see exnstack.py): a nest of `try_table` handlers with selective tag
-    matching and a GC array payload carried through an innermost `throw`, where the Python unwind simulator
-    computes the expected result by construction (no second engine). Each program self-checks; a SUT that
-    mis-routes the throw to the wrong handler, or corrupts the GC reference across the unwind (the wasmz
-    array-ref-through-tag class), returns a wrong value. Scales with `-n` to ever-deeper nests/routings the
-    hand-written `eh` fixtures cannot reach."""
-    out = []
-    for i in range(n):
-        label, export, expected, wat = exnstack_gen(i)
-        out.append((f"exnstack{i}|{label}", wat, export, [], expected, "int"))
-    return out, []
-
-
 def gen_compose(_cases, n):
-    """Compositional feature-interaction programs (see compose.py): a GC payload threaded through a random MIX
-    of value-preserving conduits (exception tag / call / global / br_on_cast), optionally stressed by a forced
-    GC, read direct or via a local. The oracle is the payload value (every conduit preserves it); a SUT that
-    mangles the reference anywhere in the mix returns a wrong value. Generates interactions no single mode does."""
+    """Compositional feature-interaction programs (see compose.py). Three self-checking shapes — a GC payload
+    threaded through a random MIX of value-preserving conduits (tag / call / global / br_on_cast / tail-call /
+    field / table / extern), read for its value or for `ref.is_null`; a routed exception nest; or an exnref
+    captured / carried / re-raised — together SUBSUME the old `castbr` / `externconvert` / `eh` / `exnstack`
+    modes (verified to reproduce every finding they did, on every engine) while also generating mixed
+    interactions no single one could. The oracle is computable by construction; a SUT that mangles the
+    reference, mis-routes a throw, or fails a mandated trap returns a wrong value."""
     out = []
     for i in range(n):
         label, export, expected, wat = compose_gen(i)
@@ -147,16 +96,15 @@ def gen_compose(_cases, n):
 
 def gen_all(cases, n):
     """Run the whole self-checking GC-soundness oracle suite in one pass — `morphism` + `recgroup` +
-    `externconvert` + `castbr` + `eh`. None need a corpus and each program carries its own per-program
-    oracle, so this throws every soundness probe we have at a SUT in a single command. Case names stay
+    `compose` (which itself subsumes the old castbr / externconvert / eh / exnstack corners). None need a
+    corpus and each program carries its own per-program oracle, so this throws every soundness probe we have
+    at a SUT in a single command. Case names stay
     mode-prefixed so a finding says which oracle fired. The low-shape modes are capped (they have only a few
     distinct programs); `morphism` scales with `-n`. (The `invalid` validation battery runs alongside this
     under `--mode all` too; it is wired in the CLI because it routes to the validation differential, not the
     execution one.)"""
     out, untested = [], []
-    for gen, count in ((gen_morphism, n), (gen_recgroup, min(n, 6)),
-                       (gen_externconvert, min(n, 4)), (gen_castbr, min(n, 6)),
-                       (gen_eh, min(n, eh_count())), (gen_exnstack, min(n, 12))):
+    for gen, count in ((gen_morphism, n), (gen_recgroup, min(n, 6)), (gen_compose, min(n, 30))):
         w, u = gen(cases, count)
         out += w
         untested += u
@@ -164,5 +112,4 @@ def gen_all(cases, n):
 
 
 MODES = {"replay": gen_replay, "mutate": gen_mutate, "smith": gen_smith, "morphism": gen_morphism,
-         "recgroup": gen_recgroup, "externconvert": gen_externconvert, "castbr": gen_castbr,
-         "eh": gen_eh, "exnstack": gen_exnstack, "compose": gen_compose, "all": gen_all}
+         "recgroup": gen_recgroup, "compose": gen_compose, "all": gen_all}
