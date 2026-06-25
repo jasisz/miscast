@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from .config import SEEDS_DEFAULT, WORK, tool_versions
 from .engines import ENGINES, ENGINE_ORDER, wasmtime_has_gc
 from .modes import MODES
+from .invalid import segs as invalid_battery
 from .mutate import mutate_module
 from .reduce import dedupe_summary
 from .toolchain import prepare
@@ -51,7 +52,10 @@ def _cell(v, w=11):
 def main():
     ap = argparse.ArgumentParser(prog="miscast",
                                  description="a .wast-native differential tester for WebAssembly GC subtype soundness")
-    ap.add_argument("--mode", choices=MODES, default="replay")
+    ap.add_argument("--mode", choices=list(MODES) + ["invalid"], default="replay",
+                    help="replay/mutate (corpus), smith (random), the self-checking GC oracles "
+                         "morphism/recgroup/externconvert/castbr, invalid (spec-invalid validation battery), "
+                         "or 'all' to run the whole oracle suite + the validation battery at once")
     ap.add_argument("--seeds", default=SEEDS_DEFAULT, help="dir of .wast / .wat corpus")
     ap.add_argument("--sut", required=True, help="engine under test (e.g. wasmtime, custom); the rest are oracles")
     ap.add_argument("--oracles", help="oracle engines to use, comma-separated (the SUT is always "
@@ -181,12 +185,19 @@ def main():
                     ["wtools"] + base_cols)
     else:
         cases, stats = load_corpus(args.seeds)
-        work, untested = MODES[args.mode](cases, args.n)
-        print(f"# mode={args.mode}  files={stats['files']}  modules={stats['modules']}  cases={len(work)}")
+        work, untested = ([], 0) if args.mode == "invalid" else MODES[args.mode](cases, args.n)
+        inval = invalid_battery() if args.mode in ("invalid", "all") else []
+        print(f"# mode={args.mode}  files={stats['files']}  modules={stats['modules']}  cases={len(work)}"
+              + (f"  invalid={len(inval)}" if inval else ""))
         print(f"# engines={'+'.join(base_cols)}  sut={sut}  jobs={args.jobs}")
         print(f"# tools={tool_versions(engines)}", flush=True)
-        section("execution — per-action value / trap differential",
-                pool("execution", lambda c: differential(c, sut, engines), work), base_cols)
+        if work:
+            section("execution — per-action value / trap differential",
+                    pool("execution", lambda c: differential(c, sut, engines), work), base_cols)
+        if inval:
+            section("validation — spec-invalid GC modules: does the SUT reject them?",
+                    pool("validation", lambda s: validation_differential(s, sut, engines), inval),
+                    ["wtools"] + base_cols)
 
     findings = classes["SOUNDNESS"] + classes["VALUE"]
     print("\n" + "=" * 70)

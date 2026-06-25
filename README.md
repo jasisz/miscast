@@ -1,4 +1,4 @@
-# miscast — a `.wast`-native differential tester for WebAssembly GC subtype soundness
+# miscast — a differential & self-checking tester for WebAssembly GC soundness
 
 Replays the official WebAssembly spec testsuite against any interpreter, running
 each case on several engines: V8, wasmtime, and the WebAssembly **reference
@@ -9,11 +9,18 @@ divergence, where the system-under-test runs something every oracle traps on, or
 accepts a module every oracle rejects. The spec authors already wrote the hard
 ill-typed cases; curated hand-seeds cover the corners the testsuite misses.
 
+It also **generates self-checking** GC-soundness programs that carry their own oracle
+— a shadow-GC model, rec-group canonicalization, extern-convert round-trips,
+`br_on_cast` value-forwarding (the `morphism` / `recgroup` / `externconvert` / `castbr`
+modes) — so a single engine's wrong answer is a self-evident bug with no second engine
+to consult; and a curated battery of spec-invalid modules (`invalid`) that every
+conformant validator rejects. These found the maturing-interpreter bugs below.
+
 *The name:* it catches an interpreter that **mis-casts** — runs ill-typed code (a
 botched subtype/cast check) a conformant engine would reject.
 
 ```
-python3 -m miscast --sut ENGINE [--oracles LIST] [--mode replay|mutate|smith] [--seeds DIR] [--overtrap]
+python3 -m miscast --sut ENGINE [--mode replay|mutate|smith|morphism|recgroup|externconvert|castbr|invalid|all] [--oracles LIST] [--seeds DIR] [-n N] [--overtrap]
 ```
 
 **No third-party dependencies** — only the Python standard library. The one external
@@ -21,8 +28,8 @@ tool it requires is `wasm-tools`; the engines are optional and auto-detected: `n
 (≥22, for the V8 oracle), `wasmtime`, and the reference interpreter (via `SPEC_WASM`).
 Run from the repo root. The code is a small package (`miscast/`): `config` /
 `toolchain` / `engines` / `verdict` / `runner` / `mutate` / `reify` / `morphism` /
-`recgroup` / `externconvert` / `wast` / `reduce` / `modes` / `repro` / `cli`, plus an optional
-Rust embedder in `runner/`.
+`recgroup` / `externconvert` / `castbr` / `invalid` / `wast` / `reduce` / `modes` / `repro` /
+`cli`, plus an optional Rust embedder in `runner/`.
 
 ## Native input: `.wast`
 
@@ -88,6 +95,9 @@ but flagged only with `--overtrap`.
 | `morphism` | self-checking **shadow-GC** programs: run one object graph through **several** real Wasm GC representations *and* a hand-rolled linear-memory model, check they all agree, and **isolate** which representation path diverges (see below) |
 | `recgroup` | **rec-group canonicalization** trap-differential: two recursion groups holding the same mutually-recursive types in different **member order** are distinct types under iso-recursive canonicalization, so a `call_indirect` against one on a function of the other must **trap**. A SUT that runs it canonicalizes equi-recursively and executed an ill-typed call (found Talos#108). |
 | `externconvert` | **`extern.convert_any` / `any.convert_extern`** round-trip: a GC ref pushed out to `externref` and back must be preserved, so each program self-checks by returning the round-tripped value. A SUT that traps or returns something else diverges (an engine missing the conversion opcodes). |
+| `castbr` | **`br_on_cast` / `br_on_cast_fail`** value-forwarding: the cast operand — not null — must reach the branch, so each program reads the forwarded reference back (`ref.is_null` / `ref.test` / a field) and self-checks. A SUT that forwards a null returns the wrong value (or traps on the field read). |
+| `invalid` | a curated battery of **spec-invalid GC modules** routed to the validation differential — type-section subtyping (narrow / drop / retype a field, extend a `final` type, exceed depth 63) and operand-stack typing (wrong block / function result type or arity, non-defaultable `array.new_default`). Every conformant validator rejects them; a SUT that **accepts and runs** one has no validator for that rule and is unsound. |
+| `all` | run the whole **self-checking GC-soundness oracle suite** (`morphism` + `recgroup` + `externconvert` + `castbr`) **and** the `invalid` validation battery in one command — no corpus needed, each execution program is its own oracle, and a finding's case name says which probe fired. |
 
 ## The shadow-GC oracle (`--mode morphism`)
 
@@ -138,12 +148,15 @@ CUSTOM_CMD="..." python3 -m miscast --mode mutate --seeds seeds --sut custom
 ```
 
 Replaying the official `gc-type-subtyping.wast` against the **Talos** Lean
-interpreter reproduces its `call_indirect` soundness bug with **no mutation and no
+interpreter surfaced its `call_indirect` soundness bug with **no mutation and no
 hand-seed**: the spec's own `(assert_trap (invoke "failN") "indirect call type
-mismatch")` cases *run* instead of trapping — V8, wasmtime, the reference interpreter
-and the spec's own assert all trap, Talos returns. (From the outside the
-`call_indirect` check looks like an exact structural signature compare rather than a
-subtype check.)
+mismatch")` cases *ran* instead of trapping — V8, wasmtime, the reference interpreter
+and the spec's own assert all trapped, Talos returned. (From the outside the
+`call_indirect` check looked like an exact structural signature compare rather than a
+subtype check.) Reported as [Talos#95](https://github.com/cajal-technologies/talos/issues/95)
+and since fixed; the same replay still surfaces the class on any unpatched engine, and the
+related rec-group canonicalization variant (`recgroup` mode) remains open as
+[Talos#108](https://github.com/cajal-technologies/talos/issues/108).
 
 Trimmed output from that run (Talos as the SUT):
 
@@ -183,47 +196,24 @@ subtyping soundness).
 
 ## Found in the wild
 
-Each verified against the reference interpreter as ground truth, on the latest engine version:
+Maturing GC interpreters, each verified against the reference interpreter and the production engines
+(V8, wasmtime, WasmEdge) as ground truth. Full write-ups — repros, controls, why each is a spec
+violation — in [`docs/findings.md`](docs/findings.md).
 
-- **WasmEdge** — its validator accepts a module with a forward supertype reference (a `sub` type
-  whose supertype has a larger type index), which the spec rejects. Found by the `mutate`
-  type-graph generator (`reorder-rec`), **not** the corpus — this module isn't in the testsuite.
-  Live in 0.17.0, in both the interpreter and the AOT compiler.
-  [WasmEdge#5061](https://github.com/WasmEdge/WasmEdge/issues/5061)
-- **Talos** (a Lean wasm interpreter) — `call_indirect` accepted a supertype where the spec
-  requires a subtype, running an ill-typed indirect call. Reproduced straight from the spec's own
-  `gc-type-subtyping.wast`, with no mutation and no hand-seed.
-  [cajal-technologies/talos#95](https://github.com/cajal-technologies/talos/issues/95)
-- **Talos** — `call_indirect` runs an ill-typed indirect call across **reordered recursion groups**: it
-  compares recursion-group type identity **equi-recursively** (by unrolling) instead of iso-recursively, so
-  two groups holding the same mutually-recursive types in a different member order are wrongly treated as
-  equal where the spec's positional canonicalization makes them distinct types. wasmtime, WasmEdge and V8
-  all trap; Talos executes the call. Found by the `recgroup` mode, with controls (identical order → all
-  agree; func-only → still fires) isolating it to member-order canonicalization.
-  [cajal-technologies/talos#108](https://github.com/cajal-technologies/talos/issues/108)
-- **wasmz** (a Zig wasm interpreter with GC) — a valid module whose only content is an `i31ref`
-  global initialized by `ref.i31` (a constant expression that needs no defined struct/array type)
-  panics at instantiation with `reached unreachable code`, where wasm-tools, wasmtime and the
-  reference interpreter all accept and run it. A plain `funcref` global hits the same path. Found by
-  the `mutate` type-graph generator over the GC corpus.
-  [Ray-D-Song/wasmz#4](https://github.com/Ray-D-Song/wasmz/issues/4)
-- **wasmz** — `ref.test` / `ref.cast` against a concrete function type never matches a non-null funcref
-  (it matches only the abstract `func` heap type), so `ref.test (ref $ft) (ref.func $fa)` returns 0 where
-  the funcref is exactly `$ft`; wasm-tools, wasmtime, WasmEdge and V8 all return 1, differing by a single
-  byte (the heap-type immediate). Found by the **shadow-GC oracle** (`--mode morphism`, the funcref fold
-  step) and reduced to that one-byte differential.
-  [Ray-D-Song/wasmz#5](https://github.com/Ray-D-Song/wasmz/issues/5)
-- **wasmz** — `ref.test` / `ref.cast` compares struct type identity **nominally** (by declared type index)
-  instead of **structurally**: two separately-declared, non-final, structurally-identical struct types are
-  the same type under iso-recursive canonicalization, so `ref.test (ref $a)` on a `struct.new $b` value must
-  be 1, but wasmz returns 0; wasmtime, WasmEdge and V8 all return 1. A finality control (make one type
-  `final`) collapses all engines to 0, isolating the defect to non-final structural canonicalization. Found
-  by the **shadow-GC oracle** (`--mode morphism`, the `bit2` canonicalization rail), distinct from #5.
-  [Ray-D-Song/wasmz#6](https://github.com/Ray-D-Song/wasmz/issues/6)
+| engine | divergence | found by | issue |
+|--------|------------|----------|-------|
+| WasmEdge | validator accepts a forward supertype reference | `mutate` | [#5061](https://github.com/WasmEdge/WasmEdge/issues/5061) |
+| Talos | `call_indirect` accepts a supertype *(fixed)* | `replay` | [#95](https://github.com/cajal-technologies/talos/issues/95) |
+| Talos | `call_indirect` across reordered recursion groups | `recgroup` | [#108](https://github.com/cajal-technologies/talos/issues/108) |
+| Talos | global init rejects a plain `struct.new`, accepts an arith-wrapped one | probe | [#109](https://github.com/cajal-technologies/talos/issues/109) |
+| wasmz | `i31ref` / `funcref` global instantiation panic | `mutate` | [#4](https://github.com/Ray-D-Song/wasmz/issues/4) |
+| wasmz | `ref.test`/`ref.cast` vs a concrete function type under-matches | `morphism` | [#5](https://github.com/Ray-D-Song/wasmz/issues/5) |
+| wasmz | struct type identity is nominal, not structural | `morphism` | [#6](https://github.com/Ray-D-Song/wasmz/issues/6) |
+| wasmz | `br_on_cast` forwards null to the taken branch | `castbr` | [#7](https://github.com/Ray-D-Song/wasmz/issues/7) |
+| wasmz | accepts spec-invalid modules (no validation) | `invalid` | [#8](https://github.com/Ray-D-Song/wasmz/issues/8) |
 
-Mature production engines (V8, wasmtime) are conformant across both the corpus and the generated
-mutations — the tool does not false-positive on them. Its edge is **maturing / research
-interpreters**, and (via `mutate`) **novel ill-typed modules** the big engines have not already fuzzed.
+Mature production engines (V8, wasmtime, WasmEdge) are conformant across the corpus and every generated
+probe — the tool does not false-positive on them. Its edge is **maturing / research interpreters**.
 
 ## Honest limits
 
