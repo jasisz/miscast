@@ -138,6 +138,24 @@ def test_compose():
     eq("compose has a mandated null-throw trap (eh class)", saw_trap, True)
 
 
+def test_trapline():
+    # the trap-boundary generator: each trappable op swept across its boundary with a baked TRAP or constant.
+    # Pure structural checks; engine agreement re-confirmed by `python3 -m miscast.trapline`.
+    from miscast.trapline import trapline_gen, _FAMILIES
+    fams, saw_trap, saw_val = set(), False, False
+    for s in range(40):
+        label, export, expected, wat = trapline_gen(s)
+        eq(f"trapline {s} exports f", export, "f")
+        eq(f"trapline {s} is a module", wat.strip().startswith("(module"), True)
+        eq(f"trapline {s} expected is TRAP/OK", expected == "TRAP" or expected.startswith("OK "), True)
+        fams.add(label.split("-")[1].split("[")[0])
+        saw_trap = saw_trap or expected == "TRAP"
+        saw_val = saw_val or expected.startswith("OK ")
+    eq("trapline sweeps every family", len(fams) >= len(_FAMILIES), True)
+    eq("trapline has mandated-TRAP probes", saw_trap, True)
+    eq("trapline has baked-constant probes", saw_val, True)
+
+
 def test_norm_arg():
     # spec operands are written in hex; a SUT's CLI may parse hex as 0, so normalize to signed decimal.
     eq("i32 hex positive", _norm_arg("i32", "0x7fffffff"), "2147483647")

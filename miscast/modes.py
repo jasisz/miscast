@@ -18,6 +18,7 @@ from .toolchain import _run
 from .morphism import gen as morphism_gen
 from .recgroup import gen as recgroup_gen
 from .compose import compose_gen
+from .trapline import trapline_gen
 from .mutate import mutate_module
 
 
@@ -95,6 +96,18 @@ def gen_compose(_cases, n):
 
 
 
+def gen_trapline(_cases, n):
+    """Trap-boundary probes (see trapline.py): each trappable op swept across its boundary {edge-1, edge,
+    edge+1} with a baked TRAP or constant oracle — the off-by-one bounds check on array / memory / table
+    accesses, div/rem-by-zero and INT_MIN/-1, trunc vs trunc_sat of out-of-range / NaN, a null deref, a
+    failing ref.cast. A SUT that runs past a boundary (or fails to saturate) diverges; no second engine."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = trapline_gen(i)
+        out.append((f"trapline{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
 def gen_all(cases, n):
     """Run the whole self-checking GC-soundness oracle suite in one pass — `morphism` + `recgroup` +
     `compose` (which itself subsumes the old castbr / externconvert / eh / exnstack corners). None need a
@@ -113,4 +126,4 @@ def gen_all(cases, n):
 
 
 MODES = {"replay": gen_replay, "mutate": gen_mutate, "smith": gen_smith, "morphism": gen_morphism,
-         "recgroup": gen_recgroup, "compose": gen_compose, "all": gen_all}
+         "recgroup": gen_recgroup, "compose": gen_compose, "trapline": gen_trapline, "all": gen_all}
