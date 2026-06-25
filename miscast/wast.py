@@ -10,6 +10,7 @@ import glob
 import os
 import re
 
+from .reify import reify_ref_result
 from .toolchain import u32
 
 ARG_RE = re.compile(r"\((i32|i64)\.const\s+(-?(?:0x[0-9a-fA-F]+|\d+))\)")
@@ -66,6 +67,24 @@ def result_type(module, export):
     if any(t in ("f32", "f64") for t in res):
         return "float"
     return None
+
+
+def reified_case(module, export, expected):
+    """Make the export's result comparable by VALUE. A plain int/float result is already comparable;
+    a GC-reference result is rewritten to an i32 fingerprint of the reference's abstract type (so a
+    subtype/cast unsoundness that returns a wrong-typed ref shows up as a value divergence instead of
+    hiding behind a status-only compare). Returns (module, rtype, expected) — the original module with
+    status-only comparison when the result isn't a reifiable GC reference.
+
+    The rewritten module is run by every engine identically, so the fingerprint can never manufacture a
+    divergence; the spec assert no longer matches the i32, so it is dropped (the engines are the oracle)."""
+    rt = result_type(module, export)
+    if rt is not None:
+        return module, rt, expected
+    new, ok = reify_ref_result(module, export)
+    if ok:
+        return new, "int", None
+    return module, None, expected
 
 
 def strip_comments(t):
@@ -174,13 +193,15 @@ def parse_wast(text, prefix):
                 mres = I32RES_RE.search(form[form.find(inv) + len(inv):])
                 expected = ("OK " + u32(mres.group(1))) if mres else "RET"
             idx += 1
-            cases.append((f"{prefix}:{name}#{idx}", cur, name, args, expected, result_type(cur, name)))
+            mod2, rt, exp2 = reified_case(cur, name, expected)
+            cases.append((f"{prefix}:{name}#{idx}", mod2, name, args, exp2, rt))
         elif form.startswith("(invoke"):
             pi = parse_invoke(form)
             if cur is None or pi is None:
                 stats["skip"] += 1; continue
             name, args = pi; idx += 1
-            cases.append((f"{prefix}:{name}#{idx}", cur, name, args, None, result_type(cur, name)))
+            mod2, rt, _ = reified_case(cur, name, None)
+            cases.append((f"{prefix}:{name}#{idx}", mod2, name, args, None, rt))
     return cases, stats
 
 
@@ -296,5 +317,6 @@ def load_corpus(d):
             for k in ("invalid", "skip", "modules"):
                 stats[k] += st[k]
         else:
-            cases.append((f"{base}:f", txt, "f", [], None, result_type(txt, "f"))); stats["modules"] += 1
+            mod2, rt, _ = reified_case(txt, "f", None)
+            cases.append((f"{base}:f", mod2, "f", [], None, rt)); stats["modules"] += 1
     return cases, stats
