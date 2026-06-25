@@ -20,6 +20,11 @@ _NUM = re.compile(r"-?(?:0x[0-9a-fA-F]+|\d+\.\d+(?:[eE][+-]?\d+)?|\d+(?:[eE][+-]
 _CRASH = re.compile(r"segmentation|segfault|core dumped|\bpanicked?\b|unable to dump|"
                     r"exception in thread|out ?of ?memory|outofmemoryerror|"
                     r"arrayindexoutofbounds|nullpointerexception|stackoverflowerror|illegalstate", re.I)
+# A clean Wasm TRAP, across engines' differing wording — checked AFTER _CRASH so a host crash is never a trap.
+# (wasmtime/V8 say "trap"; WAMR prefixes "Exception: <reason>"; others spell the reason out.)
+_TRAP = re.compile(r"\btrap\b|unreachable|out of bounds|null (reference|dereference|access)|"
+                   r"indirect call type mismatch|cast failure|divide by zero|integer (overflow|divide)|"
+                   r"u?n(initialized|defined) element|exception:", re.I)
 
 
 def be_v8(wat, wasm, export, args):
@@ -103,7 +108,7 @@ def make_be_cmd(tmpl):
         both = (r.stdout + r.stderr)
         if _CRASH.search(both):
             return "CRASH"                            # the engine itself fell over — not a Wasm trap
-        if "trap" in both.lower():
+        if _TRAP.search(both):
             return "TRAP"
         m = _NUM.match(r.stdout.strip())
         if m:
