@@ -22,6 +22,7 @@ fn make_config(collector: &str, opt: &str) -> Config {
     config.wasm_gc(true);
     config.wasm_function_references(true);
     config.wasm_reference_types(true);
+    config.wasm_exceptions(true);
     config.collector(match collector {
         "null" => Collector::Null,
         "copying" => Collector::Copying,

@@ -7,6 +7,7 @@
   recgroup rec-group canonicalization trap-differential: reordered recursion groups make distinct types, so call_indirect must trap
   externcv extern.convert_any / any.convert_extern round-trip: a GC ref pushed out to externref and back must be preserved
   castbr   br_on_cast / br_on_cast_fail must forward the cast operand (not null) to the branch
+  eh       try_table / throw / throw_ref / exnref self-checks: tag forwarding, exnref-as-value, mandated null-throw traps
   invalid  a battery of spec-invalid GC modules: does the SUT reject them? (validation differential)
 """
 import os
@@ -17,6 +18,7 @@ from .morphism import gen as morphism_gen
 from .recgroup import gen as recgroup_gen
 from .externconvert import gen as externconvert_gen
 from .castbr import gen as castbr_gen
+from .eh import gen as eh_gen, count as eh_count
 from .mutate import mutate_module
 
 
@@ -101,17 +103,31 @@ def gen_castbr(_cases, n):
     return out, []
 
 
+def gen_eh(_cases, n):
+    """Exception-handling self-checks (see eh.py): try_table / throw / throw_ref / exnref programs whose
+    sentinel only the conformant unwinding + tag/exnref forwarding produces (or a spec-mandated null
+    `throw_ref` trap). The per-program oracle is baked in; a SUT that mis-forwards a tag param, drops a
+    captured exnref, canonicalizes the wrong handler, or fails to trap diverges with no second engine
+    required. The spec-invalid EH modules live in the `invalid` battery (validation differential)."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = eh_gen(i)
+        out.append((f"eh{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
 def gen_all(cases, n):
     """Run the whole self-checking GC-soundness oracle suite in one pass — `morphism` + `recgroup` +
-    `externconvert` + `castbr`. None need a corpus and each program carries its own per-program oracle, so
-    this throws every GC-soundness probe we have at a SUT in a single command. Case names stay mode-prefixed
-    so a finding says which oracle fired. The low-shape modes are capped (they have only a few distinct
-    programs); `morphism` scales with `-n`. (The `invalid` validation battery runs alongside this under
-    `--mode all` too; it is wired in the CLI because it routes to the validation differential, not the
+    `externconvert` + `castbr` + `eh`. None need a corpus and each program carries its own per-program
+    oracle, so this throws every soundness probe we have at a SUT in a single command. Case names stay
+    mode-prefixed so a finding says which oracle fired. The low-shape modes are capped (they have only a few
+    distinct programs); `morphism` scales with `-n`. (The `invalid` validation battery runs alongside this
+    under `--mode all` too; it is wired in the CLI because it routes to the validation differential, not the
     execution one.)"""
     out, untested = [], []
     for gen, count in ((gen_morphism, n), (gen_recgroup, min(n, 6)),
-                       (gen_externconvert, min(n, 4)), (gen_castbr, min(n, 6))):
+                       (gen_externconvert, min(n, 4)), (gen_castbr, min(n, 6)),
+                       (gen_eh, min(n, eh_count()))):
         w, u = gen(cases, count)
         out += w
         untested += u
@@ -119,4 +135,5 @@ def gen_all(cases, n):
 
 
 MODES = {"replay": gen_replay, "mutate": gen_mutate, "smith": gen_smith, "morphism": gen_morphism,
-         "recgroup": gen_recgroup, "externconvert": gen_externconvert, "castbr": gen_castbr, "all": gen_all}
+         "recgroup": gen_recgroup, "externconvert": gen_externconvert, "castbr": gen_castbr,
+         "eh": gen_eh, "all": gen_all}

@@ -12,7 +12,7 @@ WORK = os.path.join(ROOT, "work")
 os.makedirs(WORK, exist_ok=True)
 
 SEEDS_DEFAULT = os.path.join(ROOT, "seeds")
-FEATURES = "gc,function-references,reference-types,tail-call,bulk-memory,multi-value,extended-const"
+FEATURES = "gc,function-references,reference-types,tail-call,bulk-memory,multi-value,extended-const,exceptions"
 
 
 def find_node():

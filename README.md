@@ -11,16 +11,17 @@ ill-typed cases; curated hand-seeds cover the corners the testsuite misses.
 
 It also **generates self-checking** GC-soundness programs that carry their own oracle
 — a shadow-GC model, rec-group canonicalization, extern-convert round-trips,
-`br_on_cast` value-forwarding (the `morphism` / `recgroup` / `externconvert` / `castbr`
-modes) — so a single engine's wrong answer is a self-evident bug with no second engine
-to consult; and a curated battery of spec-invalid modules (`invalid`) that every
-conformant validator rejects. These found the maturing-interpreter bugs below.
+`br_on_cast` value-forwarding, exception-handling unwinding (the `morphism` / `recgroup`
+/ `externconvert` / `castbr` / `eh` modes) — so a single engine's wrong answer is a
+self-evident bug with no second engine to consult; and a curated battery of spec-invalid
+modules (`invalid`) that every conformant validator rejects. These found the
+maturing-interpreter bugs below.
 
 *The name:* it catches an interpreter that **mis-casts** — runs ill-typed code (a
 botched subtype/cast check) a conformant engine would reject.
 
 ```
-python3 -m miscast --sut ENGINE [--mode replay|mutate|smith|morphism|recgroup|externconvert|castbr|invalid|all] [--oracles LIST] [--seeds DIR] [-n N] [--overtrap]
+python3 -m miscast --sut ENGINE [--mode replay|mutate|smith|morphism|recgroup|externconvert|castbr|eh|invalid|all] [--oracles LIST] [--seeds DIR] [-n N] [--overtrap]
 ```
 
 **No third-party dependencies** — only the Python standard library. The one external
@@ -99,8 +100,9 @@ faults the host with an `ArrayIndexOutOfBoundsException`, where a plain UNSUP wo
 | `recgroup` | **rec-group canonicalization** trap-differential: two recursion groups holding the same mutually-recursive types in different **member order** are distinct types under iso-recursive canonicalization, so a `call_indirect` against one on a function of the other must **trap**. A SUT that runs it canonicalizes equi-recursively and executed an ill-typed call (found Talos#108). |
 | `externconvert` | **`extern.convert_any` / `any.convert_extern`** round-trip: a GC ref pushed out to `externref` and back must be preserved, so each program self-checks by returning the round-tripped value. A SUT that traps or returns something else diverges (an engine missing the conversion opcodes). |
 | `castbr` | **`br_on_cast` / `br_on_cast_fail`** value-forwarding: the cast operand — not null — must reach the branch, so each program reads the forwarded reference back (`ref.is_null` / `ref.test` / a field) and self-checks. A SUT that forwards a null returns the wrong value (or traps on the field read). |
+| `eh` | **exception-handling** self-checks (`try_table` / `throw` / `throw_ref` / `exnref`): each program returns a sentinel only the conformant unwinding + tag/`exnref` forwarding produces (or traps where a null `throw_ref` must) — plain / multi-param / `catch_all` / `catch_ref` / `catch_all_ref` catches, an `exnref` captured into a local / GC struct field / array element / passed across a call frame, `throw_ref` re-raising with its payload intact, propagation past a non-matching handler, deep multi-frame unwinds, and a GC reference forwarded through a tag. The per-program oracle is baked in, so one engine's wrong answer is self-evident (found a wasmz array-ref corruption, #9). The spec-invalid EH modules (catch / throw arity + type rules) live in the `invalid` battery. |
 | `invalid` | a curated battery of **spec-invalid GC modules** (`corpus/invalid/*.wat`, one per case) routed to the validation differential — type-section subtyping (narrow / drop / retype a field, extend a `final` type, exceed depth 63), operand-stack typing (wrong block / function result type or arity, non-defaultable `array.new_default`), and reference-type casts (a `ref.test` / `ref.cast` whose target heap type is in a different hierarchy than the operand, a `br_on_cast` / `br_on_cast_fail` whose target label cannot receive the forwarded operand). Every conformant validator rejects them; a SUT that **accepts and runs** one has no validator for that rule and is unsound. Add a case by dropping a `.wat` into the corpus. |
-| `all` | run the whole **self-checking GC-soundness oracle suite** (`morphism` + `recgroup` + `externconvert` + `castbr`) **and** the `invalid` validation battery in one command — no corpus needed, each execution program is its own oracle, and a finding's case name says which probe fired. |
+| `all` | run the whole **self-checking soundness oracle suite** (`morphism` + `recgroup` + `externconvert` + `castbr` + `eh`) **and** the `invalid` validation battery in one command — no corpus needed, each execution program is its own oracle, and a finding's case name says which probe fired. |
 
 ## The shadow-GC oracle (`--mode morphism`)
 
@@ -214,6 +216,7 @@ violation — in [`docs/findings.md`](docs/findings.md).
 | wasmz | struct type identity is nominal, not structural | `morphism` | [#6](https://github.com/Ray-D-Song/wasmz/issues/6) |
 | wasmz | `br_on_cast` forwards null to the taken branch | `castbr` | [#7](https://github.com/Ray-D-Song/wasmz/issues/7) |
 | wasmz | accepts spec-invalid modules (no validation) | `invalid` | [#8](https://github.com/Ray-D-Song/wasmz/issues/8) |
+| wasmz | array ref thrown as an exception tag parameter is corrupted after catch | `eh` | [#9](https://github.com/Ray-D-Song/wasmz/issues/9) |
 | Wizard | `ref.test` / `ref.cast` accept a cross-hierarchy target type | `mutate` | [#654](https://github.com/titzer/wizard-engine/issues/654) |
 | Wizard | `br_on_cast` / `br_on_cast_fail` accept an empty-result target label | `invalid` | [#655](https://github.com/titzer/wizard-engine/issues/655) |
 | Wizard | `array.copy` checks element-type subtyping backwards — narrowing copy → type confusion → host crash | `invalid` | [#656](https://github.com/titzer/wizard-engine/issues/656) |

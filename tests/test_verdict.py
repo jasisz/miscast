@@ -104,6 +104,20 @@ def test_classify_conformance():
        ("sut-stateful-na", False))
 
 
+def test_eh_battery():
+    # the exception-handling self-check battery is structurally well-formed (no toolchain needed here;
+    # engine agreement is re-confirmed by `python3 -m miscast.eh`).
+    from miscast.eh import gen, count, _PROGRAMS
+    eq("eh battery is non-empty", count() > 0, True)
+    eq("eh count matches programs", count(), len(_PROGRAMS))
+    for label, export, expected, wat in _PROGRAMS:
+        eq(f"eh {label} has an export", isinstance(export, str) and bool(export), True)
+        eq(f"eh {label} expected is OK/TRAP", expected == "TRAP" or expected.startswith("OK "), True)
+        eq(f"eh {label} is a module", wat.strip().startswith("(module"), True)
+        eq(f"eh {label} exercises EH", ("try_table" in wat or "throw_ref" in wat), True)
+    eq("eh gen cycles by seed", gen(0), gen(count()))
+
+
 def test_norm_arg():
     # spec operands are written in hex; a SUT's CLI may parse hex as 0, so normalize to signed decimal.
     eq("i32 hex positive", _norm_arg("i32", "0x7fffffff"), "2147483647")

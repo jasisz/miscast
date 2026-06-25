@@ -115,6 +115,31 @@ target — to the branch label. wasmz keeps the control flow correct (the branch
 `ref.is_null` → 0 expected / wasmz 1; `ref.test (ref $s)` → 1 / 0; `struct.get $s 0` → 42 / trap (null
 dereference). wasmtime, WasmEdge, V8 and Talos all correct. Found by the `castbr` mode.
 
+### An array reference thrown as an exception tag parameter is corrupted after catch — [wasmz#9](https://github.com/Ray-D-Song/wasmz/issues/9)
+
+A GC **array** reference (`ref $arr`) used as a `throw` tag parameter is corrupted once the handler catches
+it: a subsequent `array.get` reads garbage instead of the stored element, and some indices fault the host
+(`Unable to dump stack trace`) — a memory-safety escape, not just a wrong value.
+
+```wat
+(module
+  (type $arr (array (mut i32)))
+  (tag $e (param (ref $arr)))
+  (func (export "f") (result i32)
+    (block $h (result (ref $arr))
+      (try_table (result i32) (catch $e $h)
+        (array.new_fixed $arr 3 (i32.const 4) (i32.const 8) (i32.const 15))
+        (throw $e)
+        (unreachable))
+      (return))
+    (array.get $arr (i32.const 2))))
+```
+
+wasmz returns `524288`; wasmtime, V8 and the reference interpreter return `15`. Controls isolate it to array
+references forwarded through a tag: a **struct** reference forwarded the same way reads its field back
+correctly (`31`), and a plain `array.get` outside any exception returns `15`. Found by the `eh` mode
+(`try_table` / `throw` / `exnref` self-checks), distinct from the absent-validator gap in #8.
+
 ### Spec-invalid modules are accepted and run — [wasmz#8](https://github.com/Ray-D-Song/wasmz/issues/8)
 
 `wasmz module.wasm f` loads and runs to completion modules that every conformant validator rejects, returning
