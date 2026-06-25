@@ -35,6 +35,7 @@ SEVERITY = {
     "oracle-unsup":  "ORACLE_UNSUP",  # no oracle could run the case
     "sut-unsup":     "SUT_UNSUP",     # SUT couldn't be probed (e.g. invalid module with no export)
     "sut-stateful-na": "SUT_NA",      # one-shot SUT can't execute a stateful script
+    "sut-na":        "SUT_NA",        # SUT can't receive the action's arguments (CUSTOM_NO_ARGS) — skipped, not a finding
     "assemble-fail": "HARNESS",       # wasm-tools could not assemble the module
     "invalid":       "HARNESS",       # module is invalid in the execution section (handled by validation)
     "agree":         "AGREE",

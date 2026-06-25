@@ -100,6 +100,8 @@ def classify(verdicts, sut, expected, rtype="int"):
     if sut not in verdicts:
         return "no-sut", False
     s = verdicts[sut]
+    if s == "SUT_NA":
+        return "sut-na", False                       # SUT couldn't receive this action's args — skip, not a finding
     # The production engines are ground truth. The .wast assert is only a FALLBACK oracle, used
     # when no live engine can run the case — never folded in alongside the engines, because a
     # stateful test or a parse quirk can make it disagree with the engines on our fresh-per-invoke

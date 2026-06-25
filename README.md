@@ -259,6 +259,7 @@ probe — the tool does not false-positive on them. Its edge is **maturing / res
 | `MC_RUNNER`  | path to the `mcr` embedder binary (default `runner/target/release/mc-runner`; build it with `cargo build --release` in `runner/`) |
 | `SPEC_WASM`  | unset — path to the WebAssembly reference interpreter (`spec` oracle) |
 | `CUSTOM_CMD` | unset — wire the interpreter under test as the `custom` engine    |
+| `CUSTOM_NO_ARGS` | unset — set to `1` if the SUT's runner ignores per-call invoke arguments (e.g. an `--invoke` that always runs with zero args); arg-taking actions are then skipped (`SUT_NA`) instead of comparing a default-argument run against the oracles and mis-reporting a value divergence |
 | `CUSTOM_VALIDATE_CMD` | unset — optional `cmd {wat} {wasm}` exposing the SUT's validate/load step (rc 0 = accepted) for full validation-differential coverage |
 | `CUSTOM_WAST_CMD` | unset — optional `cmd {wast}` if the SUT can run a whole `.wast` script (rc 0 = conformant), for stateful conformance |
 

@@ -85,8 +85,15 @@ def wasmtime_has_gc():
 
 
 def make_be_cmd(tmpl):
-    """A backend for any interpreter, driven by a command template with {wat}/{wasm}/{export}."""
+    """A backend for any interpreter, driven by a command template with {wat}/{wasm}/{export}. Invoke
+    arguments are appended positionally; set `CUSTOM_NO_ARGS=1` for a SUT whose runner cannot take per-call
+    arguments (e.g. an `--invoke` that silently ignores them) so arg-taking actions are skipped (`SUT_NA`)
+    instead of comparing a default-argument run against the oracles and mis-reporting a value divergence."""
+    no_args = bool(os.environ.get("CUSTOM_NO_ARGS"))
+
     def be(wat, wasm, export, args):
+        if args and no_args:
+            return "SUT_NA"
         r = _run(shlex.split(tmpl.format(wat=wat, wasm=wasm, export=export)) + [v for _, v in args])
         both = (r.stdout + r.stderr).lower()
         if "trap" in both:
