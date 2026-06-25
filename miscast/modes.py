@@ -3,13 +3,17 @@
   replay   the cases as-is (the assert is a fallback oracle / corroboration)
   mutate   each module's type slot swept across the subtyping matrix (assert dropped)
   smith    random valid GC modules via `wasm-tools smith` (breadth baseline)
-  dualrail self-checking shadow-GC programs (real Wasm GC vs a hand-rolled linear-memory model)
+  morphism self-checking shadow-GC programs: SEVERAL real GC representations vs a linear-memory model, isolating which path diverges
+  recgroup rec-group canonicalization trap-differential: reordered recursion groups make distinct types, so call_indirect must trap
+  externcv extern.convert_any / any.convert_extern round-trip: a GC ref pushed out to externref and back must be preserved
 """
 import os
 
 from .config import WORK
 from .toolchain import _run
-from .dualrail import gen as dualrail_gen
+from .morphism import gen as morphism_gen
+from .recgroup import gen as recgroup_gen
+from .externconvert import gen as externconvert_gen
 from .mutate import mutate_module
 
 
@@ -47,17 +51,41 @@ def gen_smith(_cases, n):
     return out, []
 
 
-def gen_dualrail(_cases, n):
-    """Self-checking dual-rail shadow-GC programs (see dualrail.py): each runs one object graph through
-    real Wasm GC and through a hand-rolled linear-memory shadow, and `check` returns real_hash - shadow_hash.
-    The correct result is 0 on every conformant engine, so the assert `OK 0` is the per-program oracle and a
-    SUT returning nonzero (a GC lowering / cast / identity bug) shows as a VALUE divergence — no second
-    engine required. A reference engine returning 0 confirms the two worlds are genuinely equivalent."""
+def gen_morphism(_cases, n):
+    """Representation-morphism programs (see morphism.py): one object graph realized as THREE real GC rails
+    (cast / cast-free tag-dispatch / structurally-identical shard) plus a linear-memory shadow, all folding
+    the same checksum. `check` returns a bitmask — 0 when every rail agrees, otherwise the bits ISOLATE the
+    failing path (bit0 cast vs shadow = funcref/own-type ref.test, bit1 tag vs shadow = GC storage/identity,
+    bit2 shard vs cast = type canonicalization). It needs no second engine — the linear-memory shadow cannot
+    be wrong about GC, so a conformant engine returns 0 on every program — but a nonzero result also says
+    WHICH representation is at fault."""
     out = []
     for i in range(n):
         K = [12, 16, 24, 32, 48][i % 5]
-        out.append((f"dualrail{i}", dualrail_gen(i, K), "check", [], "OK 0", "int"))
+        out.append((f"morphism{i}", morphism_gen(i, K), "check", [], "OK 0", "int"))
     return out, []
 
 
-MODES = {"replay": gen_replay, "mutate": gen_mutate, "smith": gen_smith, "dualrail": gen_dualrail}
+def gen_recgroup(_cases, n):
+    """Rec-group canonicalization trap-differential (see recgroup.py): two recursion groups holding the same
+    mutually-recursive types in different ORDER are DISTINCT types under iso-recursive canonicalization, so a
+    `call_indirect` against one type on a function of the other MUST trap. The per-program oracle is `TRAP`; a
+    SUT that returns a value executed an ill-typed indirect call (it canonicalizes equi-recursively). No
+    second engine required — the spec fixes the verdict."""
+    return [(f"recgroup{i}", recgroup_gen(i), "go", [], "TRAP", "int") for i in range(n)], []
+
+
+def gen_externconvert(_cases, n):
+    """extern.convert_any / any.convert_extern round-trip (see externconvert.py): the spec requires a GC ref
+    pushed out to `externref` and back to be preserved, so the self-check returns the original value. The
+    per-program oracle is `OK <value>`; a SUT that traps or returns something else diverges (e.g. an engine
+    that has not implemented the conversion opcodes)."""
+    out = []
+    for i in range(n):
+        wat, val = externconvert_gen(i)
+        out.append((f"externconvert{i}", wat, "rt", [], f"OK {val}", "int"))
+    return out, []
+
+
+MODES = {"replay": gen_replay, "mutate": gen_mutate, "smith": gen_smith, "morphism": gen_morphism,
+         "recgroup": gen_recgroup, "externconvert": gen_externconvert}

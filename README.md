@@ -20,8 +20,9 @@ python3 -m miscast --sut ENGINE [--oracles LIST] [--mode replay|mutate|smith] [-
 tool it requires is `wasm-tools`; the engines are optional and auto-detected: `node`
 (≥22, for the V8 oracle), `wasmtime`, and the reference interpreter (via `SPEC_WASM`).
 Run from the repo root. The code is a small package (`miscast/`): `config` /
-`toolchain` / `engines` / `verdict` / `runner` / `mutate` / `reify` / `dualrail` /
-`wast` / `reduce` / `modes` / `repro` / `cli`, plus an optional Rust embedder in `runner/`.
+`toolchain` / `engines` / `verdict` / `runner` / `mutate` / `reify` / `morphism` /
+`recgroup` / `externconvert` / `wast` / `reduce` / `modes` / `repro` / `cli`, plus an optional
+Rust embedder in `runner/`.
 
 ## Native input: `.wast`
 
@@ -84,37 +85,45 @@ but flagged only with `--overtrap`.
 | `replay` | run the file's command stream — three sections: **execution** (value/trap differential, assert as oracle), **validation** (`assert_invalid`), **conformance** (stateful scripts run natively, state preserved) |
 | `mutate` | break a **type relationship** in each seed — re-point an op's type slot, drop / flip a supertype edge, reorder a rec group, toggle ref nullability or `final` — then route each variant by validity: valid ones to the execution differential, **ill-typed ones to the validation differential** (does the SUT *reject* them?). A SUT that accepts a generated ill-typed module is unsound. |
 | `smith`  | random valid GC modules via `wasm-tools smith` — breadth baseline / drop-in    |
-| `dualrail` | self-checking **shadow-GC** programs: run one object graph through real Wasm GC *and* a hand-rolled linear-memory model of the same graph, and check they agree (see below) |
+| `morphism` | self-checking **shadow-GC** programs: run one object graph through **several** real Wasm GC representations *and* a hand-rolled linear-memory model, check they all agree, and **isolate** which representation path diverges (see below) |
+| `recgroup` | **rec-group canonicalization** trap-differential: two recursion groups holding the same mutually-recursive types in different **member order** are distinct types under iso-recursive canonicalization, so a `call_indirect` against one on a function of the other must **trap**. A SUT that runs it canonicalizes equi-recursively and executed an ill-typed call (found Talos#108). |
+| `externconvert` | **`extern.convert_any` / `any.convert_extern`** round-trip: a GC ref pushed out to `externref` and back must be preserved, so each program self-checks by returning the round-tripped value. A SUT that traps or returns something else diverges (an engine missing the conversion opcodes). |
 
-## The dual-rail shadow-GC oracle (`--mode dualrail`)
+## The shadow-GC oracle (`--mode morphism`)
 
 A GC reference returned by a function is opaque, so the value-differential can only compare it by status —
 blind to the wrong-typed object an unsound cast hands back. `reify` (below) turns that reference into a
-scalar fingerprint; **dual-rail** goes the whole way: it runs an entire object graph through real Wasm GC
-**and** through a hand-rolled model of the same graph in linear memory, then checks they agree.
+scalar fingerprint; the **shadow-GC oracle** goes the whole way: it runs an entire object graph through
+real Wasm GC **and** through a hand-rolled model of the same graph in plain linear memory, then checks they
+agree. The linear-memory shadow cannot be wrong about GC because it uses no GC, so a single engine
+disagreeing with it is a self-evident bug — no second engine required. A known-correct engine agreeing also
+confirms the worlds are genuinely equivalent, so a divergence elsewhere is that engine's defect, not a
+generator artifact.
 
-One random program is emitted into two worlds from the same data-segment "tape", so they are equivalent by
-construction:
+One random program is emitted from a single data-segment "tape", so every world is equivalent by
+construction. To not just *detect* a divergence but *isolate* which operation caused it, the graph is
+realized as **three** real GC representations alongside the shadow, all folding the same rolling checksum
+(ids, subtype-test outcomes, the right field, `ref.eq` identity, the followed reference's id, a
+funcref-type test, an `i31` value):
 
-- **real** uses actual GC — a `$base` / `$sub` / `$sub2` subtype hierarchy, `struct.new` / `set` / `get`,
-  `ref.test` / `ref.cast` / `ref.eq`, a funcref-type test, an `i31` round-trip, churn that forces a
+- **cast** rail — type membership via `ref.test` / `ref.cast` against the declared type (the ordinary way),
+  over a `$base` / `$sub` / `$sub2` hierarchy with `struct.new` / `set` / `get`, churn that forces a
   collection, and a post-GC field mutation;
-- **shadow** rebuilds the identical graph by hand in linear memory (tag / id / next-index / fields per
-  slot) with plain `i32` loads and stores and no GC at all.
+- **tag** rail — the same graph, but **cast-free**: membership comes from the tape tag and subtype fields
+  are read through per-kind typed arrays, so it never executes a `ref.test` / `ref.cast`. It is the rail a
+  cast bug *cannot* touch, so it stays equal to the shadow exactly when the cast path is broken;
+- **shard** rail — identical to cast except the sub-test uses `$subB`, a **separately declared** type that
+  is **structurally identical** to `$sub`. Under iso-recursive canonicalization they are the same type, so
+  a conformant engine must agree; an engine that uses nominal (declaration) identity diverges only here.
 
-Both fold the same rolling checksum over the traversal — ids, subtype-test outcomes, the right field,
-`ref.eq` identity, the followed reference's id, the funcref-type test, an `i31` value. The exported `check`
-returns `real - shadow`: **0** means the engine's GC agrees with the trustworthy linear-memory model;
-**nonzero** means a GC bug — lowering, a write barrier, relocation under a moving collector, object
-identity, or a subtype / cast check — with the failing fold step as the witness.
-
-The oracle is self-contained: the linear-memory shadow cannot be wrong about GC because it does not use GC,
-so a single engine returning nonzero is a self-evident bug, no second engine required. A known-correct
-engine returning 0 also confirms the two worlds are genuinely equivalent, so a nonzero elsewhere is that
-engine's defect, not a generator artifact — the same check caught a wrong assumption about structural type
-canonicalization while this was being built. It found the funcref subtype-check bug below (`ref.test (ref
-$ft)` on a concrete funcref): `wasmtime`, `WasmEdge` and `V8` all return 0 on the generated programs, and
-the value-differential surfaces a SUT that does not.
+The exported `check` returns a bitmask, so a nonzero result also names the failing class: `bit0` cast ≠
+shadow (a funcref / own-type `ref.test`, a write barrier, relocation under a moving collector, or any value
+bug on the cast path), `bit1` tag ≠ shadow (GC storage / identity — the cast-free rail moved), `bit2` shard
+≠ cast (type **canonicalization** — `$sub` and its structurally-identical twin disagree). **0** means every
+rail agrees. `wasmtime`, `WasmEdge` and `V8` return 0 on every program; the maturing interpreters light up —
+`Talos` returns `5` (`bit0` funcref **and** `bit2` canonicalization, two distinct defects isolated in one
+run). The check even caught a wrong assumption about structural type canonicalization while it was being
+built, and it found the funcref subtype-check bug below (`ref.test (ref $ft)` on a concrete funcref).
 
 ## Two ways the bug shows up
 
@@ -185,6 +194,13 @@ Each verified against the reference interpreter as ground truth, on the latest e
   requires a subtype, running an ill-typed indirect call. Reproduced straight from the spec's own
   `gc-type-subtyping.wast`, with no mutation and no hand-seed.
   [cajal-technologies/talos#95](https://github.com/cajal-technologies/talos/issues/95)
+- **Talos** — `call_indirect` runs an ill-typed indirect call across **reordered recursion groups**: it
+  compares recursion-group type identity **equi-recursively** (by unrolling) instead of iso-recursively, so
+  two groups holding the same mutually-recursive types in a different member order are wrongly treated as
+  equal where the spec's positional canonicalization makes them distinct types. wasmtime, WasmEdge and V8
+  all trap; Talos executes the call. Found by the `recgroup` mode, with controls (identical order → all
+  agree; func-only → still fires) isolating it to member-order canonicalization.
+  [cajal-technologies/talos#108](https://github.com/cajal-technologies/talos/issues/108)
 - **wasmz** (a Zig wasm interpreter with GC) — a valid module whose only content is an `i31ref`
   global initialized by `ref.i31` (a constant expression that needs no defined struct/array type)
   panics at instantiation with `reached unreachable code`, where wasm-tools, wasmtime and the
@@ -194,8 +210,16 @@ Each verified against the reference interpreter as ground truth, on the latest e
 - **wasmz** — `ref.test` / `ref.cast` against a concrete function type never matches a non-null funcref
   (it matches only the abstract `func` heap type), so `ref.test (ref $ft) (ref.func $fa)` returns 0 where
   the funcref is exactly `$ft`; wasm-tools, wasmtime, WasmEdge and V8 all return 1, differing by a single
-  byte (the heap-type immediate). Found by the **dual-rail shadow-GC oracle**.
+  byte (the heap-type immediate). Found by the **shadow-GC oracle** (`--mode morphism`, the funcref fold
+  step) and reduced to that one-byte differential.
   [Ray-D-Song/wasmz#5](https://github.com/Ray-D-Song/wasmz/issues/5)
+- **wasmz** — `ref.test` / `ref.cast` compares struct type identity **nominally** (by declared type index)
+  instead of **structurally**: two separately-declared, non-final, structurally-identical struct types are
+  the same type under iso-recursive canonicalization, so `ref.test (ref $a)` on a `struct.new $b` value must
+  be 1, but wasmz returns 0; wasmtime, WasmEdge and V8 all return 1. A finality control (make one type
+  `final`) collapses all engines to 0, isolating the defect to non-final structural canonicalization. Found
+  by the **shadow-GC oracle** (`--mode morphism`, the `bit2` canonicalization rail), distinct from #5.
+  [Ray-D-Song/wasmz#6](https://github.com/Ray-D-Song/wasmz/issues/6)
 
 Mature production engines (V8, wasmtime) are conformant across both the corpus and the generated
 mutations — the tool does not false-positive on them. Its edge is **maturing / research

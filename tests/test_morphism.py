@@ -1,35 +1,36 @@
-"""Unit tests for the dual-rail shadow-GC oracle.
+"""Unit tests for the representation-morphism oracle.
 
 Structural tests always run. An assemble + self-check test runs when `wasm-tools` is on PATH: every
-generated program must be valid wat, and (when a gc-capable wasmtime is found) the two worlds must agree
-(`check` = 0) on a conformant engine while a deliberately corrupted graph diverges. Run:
-`python3 tests/test_dualrail.py` (or under pytest)."""
+generated program must be valid wat, and (when a gc-capable wasmtime is found) all three real rails must
+agree with the shadow (`check` = 0) on a conformant engine, while a deliberately corrupted graph diverges.
+Run: `python3 tests/test_morphism.py` (or under pytest)."""
 import os
 import shutil
 import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from miscast.dualrail import gen
-from miscast.modes import gen_dualrail
+from miscast.morphism import gen
+from miscast.modes import gen_morphism
 
 
 def eq(name, got, want):
     assert got == want, f"{name}: got {got!r}, want {want!r}"
 
 
-def test_generates_self_check():
+def test_generates_three_rails_and_shadow():
     m = gen(0, 16)
     eq("exports check", '(func (export "check")' in m, True)
-    eq("uses real Wasm GC", "struct.new $sub" in m and "ref.test (ref $sub)" in m, True)
-    eq("exercises funcref + i31", "ref.test (ref $ftA)" in m and "i31.get_u" in m, True)
+    eq("cast rail tests $sub", "(ref.test (ref $sub) (local.get $cur))" in m, True)
+    eq("shard rail declares structurally-identical $subB", "(type $subB (sub $base" in m and "(ref.test (ref $subB)" in m, True)
+    eq("tag rail is cast-free (typed arrays)", "array.get $arrS " in m, True)
     eq("has a linear-memory shadow", "(memory 1)" in m and "i32.store" in m, True)
-    eq("returns real minus shadow", "(i32.sub (local.get $h) (local.get $sh))" in m, True)
+    eq("returns an isolation bitmask", "(i32.shl (i32.ne (local.get $ss) (local.get $h)) (i32.const 2))" in m, True)
     eq("bug variant differs from clean", gen(0, 16, bug=True) != gen(0, 16), True)
 
 
 def test_mode_cases():
-    cases, untested = gen_dualrail(None, 4)
+    cases, untested = gen_morphism(None, 4)
     eq("four cases", len(cases), 4)
     nm, mod, export, args, expected, rtype = cases[0]
     eq("export is check", export, "check")
@@ -39,9 +40,9 @@ def test_mode_cases():
 
 
 def _assemble(module):
-    p = subprocess.run(["wasm-tools", "parse", "/dev/stdin", "-o", "/tmp/_dr_test.wasm"],
+    p = subprocess.run(["wasm-tools", "parse", "/dev/stdin", "-o", "/tmp/_mp_test.wasm"],
                        input=module.encode(), capture_output=True)
-    assert p.returncode == 0, f"dual-rail module is not valid wat: {p.stderr.decode()[:160]}"
+    assert p.returncode == 0, f"morphism module is not valid wat: {p.stderr.decode()[:160]}"
 
 
 def test_assembles_and_self_checks():
@@ -55,7 +56,7 @@ def test_assembles_and_self_checks():
 
     def run(module):
         _assemble(module)
-        r = subprocess.run([wt, "run", "-W", "gc=y", "--invoke", "check", "/tmp/_dr_test.wasm"],
+        r = subprocess.run([wt, "run", "-W", "gc=y", "--invoke", "check", "/tmp/_mp_test.wasm"],
                            capture_output=True, text=True)
         out = [l for l in r.stdout.strip().splitlines() if l.strip()]
         return out[-1] if (r.returncode == 0 and out) else None
@@ -63,8 +64,8 @@ def test_assembles_and_self_checks():
     if wt is None or run(gen(0, 16)) is None:
         print("  (modules valid; skip self-check: no gc-capable wasmtime)")
         return
-    for seed in range(8):                                  # the two worlds must agree on a conformant engine
-        eq(f"seed {seed}: real GC == linear-memory shadow", run(gen(seed, 16)), "0")
+    for seed in range(8):                                  # every rail must agree with the shadow on a conformant engine
+        eq(f"seed {seed}: all rails agree (bitmask 0)", run(gen(seed, 16)), "0")
     eq("a corrupted graph is detected", run(gen(0, 16, bug=True)) != "0", True)
 
 
