@@ -153,6 +153,12 @@ Each verified against the reference interpreter as ground truth, on the latest e
   requires a subtype, running an ill-typed indirect call. Reproduced straight from the spec's own
   `gc-type-subtyping.wast`, with no mutation and no hand-seed.
   [cajal-technologies/talos#95](https://github.com/cajal-technologies/talos/issues/95)
+- **wasmz** (a Zig wasm interpreter with GC) — a valid module whose only content is an `i31ref`
+  global initialized by `ref.i31` (a constant expression that needs no defined struct/array type)
+  panics at instantiation with `reached unreachable code`, where wasm-tools, wasmtime and the
+  reference interpreter all accept and run it. A plain `funcref` global hits the same path. Found by
+  the `mutate` type-graph generator over the GC corpus.
+  [Ray-D-Song/wasmz#4](https://github.com/Ray-D-Song/wasmz/issues/4)
 
 Mature production engines (V8, wasmtime) are conformant across both the corpus and the generated
 mutations — the tool does not false-positive on them. Its edge is **maturing / research
