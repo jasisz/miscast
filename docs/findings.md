@@ -171,7 +171,12 @@ zero-length array. Wizard traps `MEMORY_OOB` instead (a completeness over-trap).
 (GC × segments).
 
 > The two validator gaps (#654, #655) and the cast/segment bugs all reproduce on Talos and wasmz as well, but
-> there they are symptoms of an absent validator (Talos's runner does not validate on load; wasmz
-> [#8](https://github.com/Ray-D-Song/wasmz/issues/8)) rather than distinct bugs — Wizard is the notable case
-> because its validator otherwise rejects everything else. (A reported `i31.get_s` "sign-extension" divergence
-> turned out to be a signed/unsigned *display* difference, identical bits — not a bug.)
+> there they are symptoms of an absent validator (Talos's runner does not validate on load and its operand-stack
+> type checker is admittedly future work; wasmz [#8](https://github.com/Ray-D-Song/wasmz/issues/8)) rather than
+> distinct bugs — Wizard is the notable case because its validator otherwise rejects everything else, so the
+> reversed `array.copy` check is a specific correctness bug, not a missing feature. The `array.copy` narrowing
+> reaches all three but the consequence differs: **wasmz** reads out-of-bounds (`0xAAAAAAAA`, a type-confusion
+> memory disclosure — the most concrete; noted on wasmz #8), **Wizard** faults the host (a JVM
+> `ArrayIndexOutOfBoundsException`), and **Talos**'s runtime field-bounds check contains it (a clean error). V8,
+> wasmtime and WasmEdge reject all of it. (A reported `i31.get_s` "sign-extension" divergence turned out to be a
+> signed/unsigned *display* difference, identical bits — not a bug.)
