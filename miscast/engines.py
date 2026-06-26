@@ -21,10 +21,11 @@ _CRASH = re.compile(r"segmentation|segfault|core dumped|\bpanicked?\b|unable to 
                     r"exception in thread|out ?of ?memory|outofmemoryerror|"
                     r"arrayindexoutofbounds|nullpointerexception|stackoverflowerror|illegalstate", re.I)
 # A clean Wasm TRAP, across engines' differing wording — checked AFTER _CRASH so a host crash is never a trap.
-# (wasmtime/V8 say "trap"; WAMR prefixes "Exception: <reason>"; others spell the reason out.)
+# (wasmtime/V8 say "trap"; WAMR prefixes "Exception: <reason>"; WasmEdge says "execution failed: <reason>, Code:
+# 0x4xx" — e.g. "execution failed: null exception reference"; others spell the reason out.)
 _TRAP = re.compile(r"\btrap\b|unreachable|out of bounds|null (reference|dereference|access)|"
                    r"indirect call type mismatch|cast failure|divide by zero|integer (overflow|divide)|"
-                   r"u?n(initialized|defined) element|exception:", re.I)
+                   r"u?n(initialized|defined) element|exception:|execution failed", re.I)
 
 
 def be_v8(wat, wasm, export, args):
