@@ -9,6 +9,11 @@
   compose  compositional feature-interaction generator: a payload threaded through a MIX of value-preserving
            conduits (tag / call / global / br_on_cast / tail-call / field / table / extern), a routed exception
            nest, or an exnref carry — self-checking by construction; subsumes castbr / externconvert / eh / exnstack
+  trapline trap-boundary generator: each trappable op swept across its {edge-1, edge, edge+1} with a baked TRAP/constant
+  memory64 high (>= 2^32) linear-memory address must TRAP, not wrap to its low 32 bits (sandbox-escape probe)
+  arrayops bulk GC array ops (copy / fill / new_data / new_elem) swept for boundary, overlap, OOB and element variance
+  castalgebra subtype / cast correctness: ref.test / ref.cast swept across the type lattice + structural-twin canonicalization + self-consistency
+  constinit GC const-expr init (global / elem / data: struct.new / array.new / ref.i31, extended-const) evaluated to a baked value
   invalid  a battery of spec-invalid GC modules: does the SUT reject them? (validation differential)
 """
 import os
@@ -21,6 +26,8 @@ from .compose import compose_gen
 from .trapline import trapline_gen
 from .memory64 import memory64_gen
 from .arrayops import arrayops_gen
+from .castalgebra import castalgebra_gen
+from .constinit import constinit_gen
 from .mutate import mutate_module
 
 
@@ -132,6 +139,31 @@ def gen_arrayops(_cases, n):
     return out, []
 
 
+def gen_castalgebra(_cases, n):
+    """Subtype / cast correctness probes (see castalgebra.py): ref.test / ref.cast swept across a fixed
+    type lattice (own / super / strict-subtype / sibling / unrelated), structurally-identical twin types
+    that must canonicalize to one (a false negative = a canonicalization gap), concrete func / array
+    membership, abstract-heap membership, and internal-consistency self-checks (test <-> cast, up-then-down
+    roundtrip). The oracle is the spec-fixed 0/1 / field / TRAP; no second engine."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = castalgebra_gen(i)
+        out.append((f"castalgebra{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
+def gen_constinit(_cases, n):
+    """GC constant-expression init probes (see constinit.py): a global / elem / data segment initialised
+    with struct.new / array.new / ref.i31 — optionally extended-const arithmetic, nested values — then read
+    back to its baked value. Catches an engine that rejects a valid const-init (Talos#109) or mis-evaluates
+    / crashes on one (wasmz). Self-checking; no second engine."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = constinit_gen(i)
+        out.append((f"constinit{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
 def gen_all(cases, n):
     """Run the whole self-checking GC-soundness oracle suite in one pass — `morphism` + `recgroup` +
     `compose` (which itself subsumes the old castbr / externconvert / eh / exnstack corners). None need a
@@ -142,7 +174,8 @@ def gen_all(cases, n):
     under `--mode all` too; it is wired in the CLI because it routes to the validation differential, not the
     execution one.)"""
     out, untested = [], []
-    for gen, count in ((gen_morphism, n), (gen_recgroup, min(n, 6)), (gen_compose, min(n, 30))):
+    for gen, count in ((gen_morphism, n), (gen_recgroup, min(n, 6)), (gen_compose, min(n, 30)),
+                       (gen_castalgebra, min(n, 54)), (gen_constinit, min(n, 80))):
         w, u = gen(cases, count)
         out += w
         untested += u
@@ -150,4 +183,5 @@ def gen_all(cases, n):
 
 
 MODES = {"replay": gen_replay, "mutate": gen_mutate, "smith": gen_smith, "morphism": gen_morphism,
-         "recgroup": gen_recgroup, "compose": gen_compose, "trapline": gen_trapline, "memory64": gen_memory64, "arrayops": gen_arrayops, "all": gen_all}
+         "recgroup": gen_recgroup, "compose": gen_compose, "trapline": gen_trapline, "memory64": gen_memory64,
+         "arrayops": gen_arrayops, "castalgebra": gen_castalgebra, "constinit": gen_constinit, "all": gen_all}

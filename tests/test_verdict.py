@@ -188,6 +188,54 @@ def test_arrayops():
     eq("arrayops has both TRAP and value probes", saw_trap and saw_val, True)
 
 
+def test_castalgebra():
+    # the subtype/cast-correctness generator: ref.test / ref.cast swept across a fixed lattice, with
+    # structural-twin canonicalization and self-consistency probes. Engine agreement re-confirmed by
+    # `python3 -m miscast.castalgebra`.
+    from miscast.castalgebra import castalgebra_gen, _FAMILIES
+    fams, saw_trap, saw_val, saw_struct, saw_zero = set(), False, False, False, False
+    for s in range(5 * len(_FAMILIES)):            # wide enough to reach every family's variants
+        label, export, expected, wat = castalgebra_gen(s)
+        eq(f"castalgebra {s} exports f", export, "f")
+        eq(f"castalgebra {s} is a module", wat.strip().startswith("(module"), True)
+        eq(f"castalgebra {s} expected TRAP/OK", expected == "TRAP" or expected.startswith("OK "), True)
+        fams.add(label.split("-")[1].split("[")[0])
+        saw_trap = saw_trap or expected == "TRAP"
+        saw_val = saw_val or expected not in ("TRAP", "OK 0")
+        saw_struct = saw_struct or "structural" in label
+        saw_zero = saw_zero or expected == "OK 0"
+    eq("castalgebra sweeps every family", len(fams) >= len(_FAMILIES), True)
+    eq("castalgebra reproduces structural-twin canonicalization (talos/wasmz)", saw_struct, True)
+    eq("castalgebra has a mandated cast TRAP", saw_trap, True)
+    eq("castalgebra has positive (membership/field) and zero (non-membership/consistent) answers",
+       saw_val and saw_zero, True)
+    eq("castalgebra has the deeper rec-group / func-subtyping / nullability families",
+       {"recgroup", "funcsub", "nullable"} <= fams, True)
+
+
+def test_constinit():
+    # the GC const-expr init generator: global / elem / data initialised with struct.new / array.new /
+    # ref.i31 (+ extended-const), read to a baked value. Engine agreement re-confirmed by
+    # `python3 -m miscast.constinit`.
+    from miscast.constinit import constinit_gen, _FAMILIES
+    fams, saw_i31, saw_ext, saw_elem = set(), False, False, False
+    for s in range(5 * len(_FAMILIES)):            # wide enough to reach every family's variants
+        label, export, expected, wat = constinit_gen(s)
+        eq(f"constinit {s} exports f", export, "f")
+        eq(f"constinit {s} is a module", wat.strip().startswith("(module"), True)
+        eq(f"constinit {s} expected is a value", expected.startswith("OK "), True)
+        fams.add(label.split("constinit-")[1].split("[")[0])    # family names contain hyphens (global-struct)
+        saw_i31 = saw_i31 or "global-i31" in label       # wasmz#4 crash surface
+        saw_ext = saw_ext or "extconst" in label          # extended-const in a GC const-expr
+        saw_elem = saw_elem or "elem" in label
+    eq("constinit sweeps every family", len(fams) >= len(_FAMILIES), True)
+    eq("constinit covers the ref.i31 global (wasmz#4 surface)", saw_i31, True)
+    eq("constinit covers extended-const arithmetic in a const-expr", saw_ext, True)
+    eq("constinit covers elem-segment const-exprs", saw_elem, True)
+    eq("constinit has the deeper i31-edge / packed / segments families",
+       {"i31edge", "packed", "segments"} <= fams, True)
+
+
 def test_norm_arg():
     # spec operands are written in hex; a SUT's CLI may parse hex as 0, so normalize to signed decimal.
     eq("i32 hex positive", _norm_arg("i32", "0x7fffffff"), "2147483647")
