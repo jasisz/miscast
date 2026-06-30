@@ -12,8 +12,10 @@
   trapline trap-boundary generator: each trappable op swept across its {edge-1, edge, edge+1} with a baked TRAP/constant
   memory64 high (>= 2^32) linear-memory address must TRAP, not wrap to its low 32 bits (sandbox-escape probe)
   arrayops bulk GC array ops (copy / fill / new_data / new_elem) swept for boundary, overlap, OOB and element variance
+  callref  typed function refs: call_ref / call_indirect / table bulk / br_on_cast[_fail] with baked call results or traps
   castalgebra subtype / cast correctness: ref.test / ref.cast swept across the type lattice + structural-twin canonicalization + self-consistency
   constinit GC const-expr init (global / elem / data: struct.new / array.new / ref.i31, extended-const) evaluated to a baked value
+  hammer   broad deterministic sweep: all + trapline + memory64 + arrayops + callref + invalid
   invalid  a battery of spec-invalid GC modules: does the SUT reject them? (validation differential)
 """
 import os
@@ -26,6 +28,7 @@ from .compose import compose_gen
 from .trapline import trapline_gen
 from .memory64 import memory64_gen
 from .arrayops import arrayops_gen
+from .callref import callref_gen
 from .castalgebra import castalgebra_gen
 from .constinit import constinit_gen
 from .mutate import mutate_module
@@ -139,6 +142,17 @@ def gen_arrayops(_cases, n):
     return out, []
 
 
+def gen_callref(_cases, n):
+    """Typed function-reference / table-call probes (see callref.py): `call_ref`, `call_indirect`, table
+    bulk ops, `br_on_cast[_fail]` over concrete function types, and mandated null / wrong-type call traps.
+    Each case has a baked result or trap, so no second engine is needed."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = callref_gen(i)
+        out.append((f"callref{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
 def gen_castalgebra(_cases, n):
     """Subtype / cast correctness probes (see castalgebra.py): ref.test / ref.cast swept across a fixed
     type lattice (own / super / strict-subtype / sibling / unrelated), structurally-identical twin types
@@ -182,6 +196,21 @@ def gen_all(cases, n):
     return out, untested
 
 
+def gen_hammer(cases, n):
+    """A broad deterministic engine sweep. `all` focuses on GC soundness/value-preservation; this adds the
+    mature-runtime stress surfaces that are otherwise separate: trap boundaries, memory64 high-address
+    aliasing, bulk GC array operations, and typed function-reference calls. The invalid validation battery is
+    added by the CLI."""
+    out, untested = gen_all(cases, n)
+    for gen, count in ((gen_trapline, min(n, 48)), (gen_memory64, min(n, 36)), (gen_arrayops, min(n, 44)),
+                       (gen_callref, min(n, 36))):
+        w, u = gen(cases, count)
+        out += w
+        untested += u
+    return out, untested
+
+
 MODES = {"replay": gen_replay, "mutate": gen_mutate, "smith": gen_smith, "morphism": gen_morphism,
          "recgroup": gen_recgroup, "compose": gen_compose, "trapline": gen_trapline, "memory64": gen_memory64,
-         "arrayops": gen_arrayops, "castalgebra": gen_castalgebra, "constinit": gen_constinit, "all": gen_all}
+         "arrayops": gen_arrayops, "callref": gen_callref, "castalgebra": gen_castalgebra,
+         "constinit": gen_constinit, "all": gen_all, "hammer": gen_hammer}

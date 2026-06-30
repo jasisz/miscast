@@ -1,9 +1,9 @@
 # miscast — a differential & self-checking tester for WebAssembly GC soundness
 
 Replays the official WebAssembly spec testsuite against any interpreter, running
-each case on several engines: V8, wasmtime, and the WebAssembly **reference
+each case on several engines: V8, wasmtime, WasmEdge, and the WebAssembly **reference
 interpreter**. The reference interpreter is treated as the spec oracle when
-available; V8 and wasmtime add production-engine corroboration. A divergence is
+available; V8, wasmtime and WasmEdge add production-engine corroboration. A divergence is
 reported only when the selected oracles **agree** — above all a **SOUNDNESS**
 divergence, where the system-under-test runs something every oracle traps on, or
 accepts a module every oracle rejects. The spec authors already wrote the hard
@@ -11,24 +11,24 @@ ill-typed cases; curated hand-seeds cover the corners the testsuite misses.
 
 It also **generates self-checking** GC-soundness programs that carry their own oracle
 — a shadow-GC model, rec-group canonicalization, extern-convert round-trips,
-`br_on_cast` value-forwarding, exception-handling unwinding (the `morphism` / `recgroup` / `compose` modes) — so a single engine's wrong answer is a
+`br_on_cast` value-forwarding, exception-handling unwinding, and typed function-reference calls (the `morphism` / `recgroup` / `compose` / `callref` modes) — so a single engine's wrong answer is a
 self-evident bug with no second engine to consult; and a curated battery of spec-invalid
-modules (`invalid`) that every conformant validator rejects. These found the
+modules plus explicitly marked compatibility probes (`invalid`). These found the
 maturing-interpreter bugs below.
 
 *The name:* it catches an interpreter that **mis-casts** — runs ill-typed code (a
 botched subtype/cast check) a conformant engine would reject.
 
 ```
-python3 -m miscast --sut ENGINE [--mode replay|mutate|smith|morphism|recgroup|compose|trapline|memory64|arrayops|castalgebra|constinit|invalid|all] [--oracles LIST] [--seeds DIR] [-n N] [--overtrap]
+python3 -m miscast --sut ENGINE [--mode replay|mutate|smith|morphism|recgroup|compose|trapline|memory64|arrayops|callref|castalgebra|constinit|invalid|all|hammer] [--oracles LIST] [--seeds DIR] [-n N] [--overtrap]
 ```
 
 **No third-party dependencies** — only the Python standard library. The one external
 tool it requires is `wasm-tools`; the engines are optional and auto-detected: `node`
-(≥22, for the V8 oracle), `wasmtime`, and the reference interpreter (via `SPEC_WASM`).
+(≥22, for the V8 oracle), `wasmtime`, `wasmedge`, and the reference interpreter (via `SPEC_WASM`).
 Run from the repo root. The code is a small package (`miscast/`): `config` /
 `toolchain` / `engines` / `verdict` / `runner` / `mutate` / `reify` / `morphism` /
-`recgroup` / `compose` / `trapline` / `memory64` / `arrayops` / `castalgebra` / `constinit` / `invalid` / `wast` / `reduce` / `modes` / `repro` /
+`recgroup` / `compose` / `trapline` / `memory64` / `arrayops` / `callref` / `castalgebra` / `constinit` / `invalid` / `wast` / `reduce` / `modes` / `repro` /
 `cli`, plus an optional Rust embedder in `runner/`.
 
 ## Native input: `.wast`
@@ -65,6 +65,7 @@ So the tool consumes two corpora in the same format:
 |------------|-----------------------------------------------------------------------|
 | `v8`       | Node ≥22 (WasmGC) + bundled `oracle/v8.js`                            |
 | `wasmtime` | `wasmtime run --invoke` (execution) · `wasmtime compile` (validation); conformance: n/a (see Honest limits) |
+| `wasmedge` | `wasmedge run --reactor` (execution) · `wasmedge compile` (validation); optional run flags via `WASMEDGE_FLAGS` |
 | `mcr`      | the `runner/` wasmtime-crate embedder (`cargo build --release` in `runner/`): **exact result bits**, a **gc-capable** wasmtime even when the PATH `wasmtime` was built without the gc feature, and stateful `--seq`. Auto-detected when built; path overridable via `MC_RUNNER` |
 | `spec`     | the WebAssembly **reference interpreter** (the spec oracle), via env `SPEC_WASM=/path/to/wasm` |
 | `custom`   | **your** interpreter, via env `CUSTOM_CMD="cmd {wat} {wasm} {export}"` — no code change |
@@ -101,10 +102,12 @@ faults the host with an `ArrayIndexOutOfBoundsException`, where a plain UNSUP wo
 | `trapline` | a **trap-boundary** generator (a different oracle law from `compose`): each trappable op is swept across its boundary `{edge-1, edge, edge+1}` with a baked **`TRAP`** or **constant** oracle — the off-by-one bounds check (`<=` vs `<`) on array / memory / table accesses (a soundness escape if it reads one past the end), div/rem-by-zero and `INT_MIN/-1`, `trunc` vs `trunc_sat` of out-of-range / NaN, a null dereference, and a failing `ref.cast`. Half the programs carry their own answer (a saturating conversion lands on a known constant), half expect a mandated trap; no second engine. (The maturing engines trap exactly where the spec says — clean — so this is coverage on the trap surface.) |
 | `memory64` | a **memory64 address-truncation** generator: a 64-bit linear-memory address `>= 2^32` that is out of bounds must **trap**, not be truncated to its low 32 bits and wrapped back in. Each plants a sentinel at a low offset and accesses a high address; an engine that returns the sentinel (running where every oracle traps) **truncated the address** — a memory-safety sandbox escape (found wasmz#10). Controls confirm an in-bounds access works and an in-32-bit OOB still traps, isolating the bug to the dropped high bits. |
 | `arrayops` | a **bulk GC array op** generator (`array.copy` / `array.fill` / `array.init_data` / `array.init_elem`) swept for boundary (off-by-one OOB → trap), overlap (memmove both directions), zero-length at the end (no trap), packed `i8`/`i16` sign extension (`get_s` vs `get_u`), dropped-segment zero-length access, and element-type variance. Self-checking — a copy/fill leaves an exact element. Systematically reproduces the Wizard `array.copy` element-subtype bug (a valid widening copy it wrongly **rejects**, #656) and the dropped-segment zero-length **over-trap** (#657). |
+| `callref` | a **typed function-reference / table-call** generator: `call_ref`, `return_call_ref`, `call_indirect`, table `init`/`copy`/`fill`, `br_on_cast` / `br_on_cast_fail` over concrete function types, plus null and wrong-signature call traps. Self-checking — each successful call returns a baked `i31` payload; each bad call must trap. |
 | `castalgebra` | a **subtype / cast correctness** generator (a different oracle law again): `ref.test` / `ref.cast` swept across a fixed type lattice (own / super / strict-subtype / sibling / unrelated → spec-fixed `0`/`1` / field / mandated `TRAP`), separately-declared **structurally-identical** types that must canonicalize to one (a `ref.test` of `0` is a canonicalization gap), **rec-group** and self-recursive types, **function-subtyping variance** (params contravariant, results covariant), concrete func / array / abstract-heap membership, nullability (`ref null` vs non-null on a null), and internal **self-consistency** (`test ⟺ cast`, up-then-down roundtrip). A false **negative** (`0` where the value *is* that type) is a correctness bug; a false **positive** (`1` / cast-success on a non-member) is a memory-safety hole. Self-checking; reproduces talos / wasmz's structural-canonicalization and concrete-func-type misses. |
 | `constinit` | a **GC constant-expression init** generator: a `global` / `elem` / `data` segment initialised with `struct.new` / `array.new` / `ref.i31` — optionally **extended-const** arithmetic, nested values, `i31` sign/zero-extension boundaries (`get_s` vs `get_u`), packed `i8`/`i16` data, complex segment slices (offset + partial count) — then read back to its baked value. Catches an engine that **rejects a valid** const-init (reproduces Talos#109's `struct.new` global over-reject) or **mis-evaluates / crashes** on one (reproduces wasmz#4's `ref.i31` const-expr panic). Self-checking; the invalid const-inits (non-constant operator, wrong-typed initialiser, forward reference) live in the `invalid` battery. |
-| `invalid` | a curated battery of **spec-invalid GC modules** (`corpus/invalid/*.wat`, one per case) routed to the validation differential — type-section subtyping (narrow / drop / retype a field, extend a `final` type, exceed depth 63), operand-stack typing (wrong block / function result type or arity, non-defaultable `array.new_default`), reference-type casts (a `ref.test` / `ref.cast` whose target heap type is in a different hierarchy than the operand, a `br_on_cast` / `br_on_cast_fail` whose target label cannot receive the forwarded operand), and **GC const-init** validation (a non-constant operator, a wrong-typed / wrong-arity `struct.new`, a forward global reference, a non-extended-const `f32.add`, `array.new_default` of a non-defaultable element). Every conformant validator rejects them; a SUT that **accepts and runs** one has no validator for that rule and is unsound. Add a case by dropping a `.wat` into the corpus. |
+| `invalid` | a curated battery of **spec-invalid GC modules** (`corpus/invalid/*.wat`, one per case) routed to the validation differential — type-section subtyping (narrow / drop / retype a field, extend a `final` type, wrong function-subtyping variance), operand-stack typing (wrong block / function result type or arity, non-defaultable `array.new_default`, mismatched `call_ref` callee), reference-type casts (a `ref.test` / `ref.cast` whose target heap type is in a different hierarchy than the operand, a `br_on_cast` / `br_on_cast_fail` whose target label cannot receive the forwarded operand), and **GC const-init** validation (a non-constant operator, a wrong-typed / wrong-arity `struct.new`, a forward global reference, a non-extended-const `f32.add`, `array.new_default` of a non-defaultable element). A depth-64 case is kept as a soft implementation-limit probe, not a standalone upstream-reportable spec violation. Every true spec-invalid case should be rejected; a SUT that **accepts and runs** one has no validator for that rule and is unsound. Add a case by dropping a `.wat` into the corpus. |
 | `all` | run the whole **self-checking soundness oracle suite** (`morphism` + `recgroup` + `compose` — the last subsuming the old `castbr` / `externconvert` / `eh` / `exnstack` — plus `castalgebra` + `constinit`) **and** the `invalid` validation battery in one command — no corpus needed, each execution program is its own oracle, and a finding's case name says which probe fired. |
+| `hammer` | a broader deterministic engine sweep: `all` + `trapline` + `memory64` + `arrayops` + `callref` + `invalid`, useful when throwing the full targeted suite at mature engines such as WasmEdge / wasmtime. |
 
 ## The shadow-GC oracle (`--mode morphism`)
 
@@ -225,8 +228,9 @@ violation — in [`docs/findings.md`](docs/findings.md).
 | Wizard | `array.copy` checks element-type subtyping backwards — narrowing copy → type confusion → host crash | `invalid` | [#656](https://github.com/titzer/wizard-engine/issues/656) |
 | Wizard | `array.new_data` / `array.new_elem` over-trap on a zero-length access of a dropped segment | probe | [#657](https://github.com/titzer/wizard-engine/issues/657) |
 
-Mature production engines (V8, wasmtime, WasmEdge) are conformant across the corpus and every generated
-probe — the tool does not false-positive on them. Its edge is **maturing / research interpreters**.
+Production engines are useful corroborating oracles when they agree, but no engine is privileged: V8,
+wasmtime and WasmEdge can all be selected as the SUT, and self-checking modes keep their baked oracle in
+the pool so one wrong production oracle becomes `oracle-split` instead of a false finding against another.
 
 ## Honest limits
 
@@ -249,7 +253,7 @@ probe — the tool does not false-positive on them. Its edge is **maturing / res
   instance and passed off as faithful. A SUT that *can* run a `.wast` script is wired
   via `CUSTOM_WAST_CMD="cmd {wast}"`.
 - **Validation-differential** (`assert_invalid`) is implemented: every oracle
-  (wasm-tools, the reference interpreter, wasmtime, V8) must reject the module. A SUT
+  (wasm-tools, the reference interpreter, wasmtime, WasmEdge, V8) must reject the module. A SUT
   that exposes a real validate step is tested fully via `CUSTOM_VALIDATE_CMD`. An
   invoke-only SUT is tested where its interface allows — an invalid module that
   exports a runnable function is decisive (the SUT returns a value = accepted-and-ran =
@@ -267,6 +271,8 @@ probe — the tool does not false-positive on them. Its edge is **maturing / res
 |--------------|------------------------------------------------------------------|
 | `V8_ORACLE`  | bundled `oracle/v8.js`                                            |
 | `NODE`       | newest WasmGC-capable node (≥22) on PATH or in `~/.nvm`          |
+| `WASMEDGE`   | `wasmedge` on PATH                                                |
+| `WASMEDGE_FLAGS` | unset — extra flags inserted into `wasmedge run` (for example `--force-interpreter` or `--enable-jit`) |
 | `MC_RUNNER`  | path to the `mcr` embedder binary (default `runner/target/release/mc-runner`; build it with `cargo build --release` in `runner/`) |
 | `SPEC_WASM`  | unset — path to the WebAssembly reference interpreter (`spec` oracle) |
 | `CUSTOM_CMD` | unset — wire the interpreter under test as the `custom` engine    |

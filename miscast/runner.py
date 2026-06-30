@@ -5,6 +5,9 @@ import os
 from .engines import ENGINES, validate_module, conformance_file, first_export
 from .verdict import classify, classify_validation, classify_conformance
 
+SELFCHECK_PREFIXES = ("morphism", "recgroup", "compose", "trapline", "memory64",
+                      "arrayops", "callref", "castalgebra", "constinit")
+
 
 def differential(case, sut, engines=ENGINES):
     """Per-action value/trap differential (a non-stateful run-segment action, or a bare .wat)."""
@@ -17,7 +20,8 @@ def differential(case, sut, engines=ENGINES):
     if not valid:
         return name, {}, expected, "invalid", False, repro
     verdicts = {en: fn(wp, wsm, export, args) for en, fn in engines.items()}
-    verdict, isdiv = classify(verdicts, sut, expected, rtype)
+    expected_is_oracle = bool(expected) and name.startswith(SELFCHECK_PREFIXES)
+    verdict, isdiv = classify(verdicts, sut, expected, rtype, expected_is_oracle)
     return name, verdicts, expected, verdict, isdiv, repro
 
 

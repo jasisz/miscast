@@ -1,13 +1,15 @@
 """The spec-INVALID GC validation battery — loaded from `corpus/invalid/*.wat`.
 
-Each file is a module rejected by the ground-truth validator (`wasm-tools validate`) and by every conformant
-engine, but it exports a runnable `f` so an invoke-only SUT is still decisive: an engine that *accepts and
-runs* it has no validator for that rule and is unsound. Each file carries a `;; reason:` header. The battery
+Most files are modules rejected by the ground-truth validator (`wasm-tools validate`) and by every conformant
+engine, but they export a runnable `f` so an invoke-only SUT is still decisive: an engine that *accepts and
+runs* one has no validator for that rule and is unsound. Each file carries a `;; reason:` header. The battery
 covers **type-section subtyping** (a subtype that narrows / drops / retypes a field, extends a `final` type,
-or exceeds the depth limit), **operand-stack typing** (a block / function result of the wrong type or arity,
-a non-defaultable `array.new_default`), and **reference-type casts** (a `ref.test` / `ref.cast` whose target
-heap type is in a different hierarchy than the operand; a `br_on_cast` / `br_on_cast_fail` whose target
-label cannot receive the forwarded operand). Add a case by dropping a new `.wat` into `corpus/invalid/`.
+or violates function-subtyping variance), **operand-stack typing** (a block / function result of the wrong
+type or arity, a non-defaultable `array.new_default`, a mismatched `call_ref` callee), and
+**reference-type casts** (a `ref.test` / `ref.cast` whose target heap type is in a different hierarchy than
+the operand; a `br_on_cast` / `br_on_cast_fail` whose target label cannot receive the forwarded operand).
+The depth-limit case is retained as a soft implementation-limit probe and should not be reported upstream
+as a standalone spec violation. Add a case by dropping a new `.wat` into `corpus/invalid/`.
 """
 import glob
 import os
@@ -48,9 +50,9 @@ def segs():
 
 
 if __name__ == "__main__":
+    import shutil
     import subprocess
-    os.environ["DYLD_LIBRARY_PATH"] = "/tmp/we017/lib"
-    WT = "/tmp/wasmtime-v46.0.0-aarch64-macos/wasmtime"
+    WT = os.environ.get("WASMTIME_BIN") or shutil.which("wasmtime")
 
     def rejects(tool, wat):
         open("/tmp/iv.wat", "w").write(wat)
@@ -60,6 +62,8 @@ if __name__ == "__main__":
         if tool == "wasm-tools":
             r = subprocess.run(["wasm-tools", "validate", "/tmp/iv.wasm"], capture_output=True, text=True)
         else:
+            if not WT:
+                return "UNSUP"
             r = subprocess.run([WT, "compile", "-W", "function-references=y,gc=y", "/tmp/iv.wasm", "-o", "/tmp/iv.cwasm"], capture_output=True, text=True)
         return "REJECT" if r.returncode != 0 else "ACCEPT"
 

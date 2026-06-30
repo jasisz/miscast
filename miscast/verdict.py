@@ -96,20 +96,22 @@ def classify_conformance(verdicts, sut):
     return "sut-stateful-na", False                  # one-shot SUT can't execute a stateful script
 
 
-def classify(verdicts, sut, expected, rtype="int"):
+def classify(verdicts, sut, expected, rtype="int", expected_is_oracle=False):
     if sut not in verdicts:
         return "no-sut", False
     s = verdicts[sut]
     if s == "SUT_NA":
         return "sut-na", False                       # SUT couldn't receive this action's args — skip, not a finding
-    # The production engines are ground truth. The .wast assert is only a FALLBACK oracle, used
-    # when no live engine can run the case — never folded in alongside the engines, because a
-    # stateful test or a parse quirk can make it disagree with the engines on our fresh-per-invoke
-    # run; trusting the engines avoids that poisoning the consensus.
+    # For replayed .wast, the assert is only a fallback oracle. For generated self-checking programs,
+    # the baked expected value is the law under test, so it participates in the oracle pool; otherwise
+    # one wrong production oracle can falsely blame a correct SUT when run in the opposite direction.
     engines = [v for k, v in verdicts.items() if k != sut]
     runnable = [v for v in engines if _status(v) in ("OK", "TRAP")]
-    if not runnable and expected and _status(expected) in ("OK", "TRAP"):
-        runnable = [expected]
+    if expected and _status(expected) in ("OK", "TRAP"):
+        if expected_is_oracle:
+            runnable.append(expected)
+        elif not runnable:
+            runnable = [expected]
     if not runnable:
         return "oracle-unsup", False
     statuses = {_status(v) for v in runnable}

@@ -1,4 +1,4 @@
-;; reason: subtype hierarchy depth 64 exceeds the spec maximum of 63
+;; reason: subtype hierarchy depth 64; soft implementation-limit probe, not an upstream-reportable spec violation by itself
 (module
   (type $t0 (sub (struct (field i32))))
   (type $t1 (sub $t0 (struct (field i32))))

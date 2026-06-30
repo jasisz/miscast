@@ -3,7 +3,7 @@ execution (per-action value/trap), validation (assert_invalid), conformance (sta
 import os
 import re
 
-from .config import WORK, SPEC_WASM, NODE, ORACLE, FEATURES
+from .config import WORK, SPEC_WASM, NODE, ORACLE, FEATURES, WASMEDGE
 from .engines import repro_command
 
 
@@ -57,6 +57,7 @@ def _write_validation(name, repro, verdicts, cols):
         "wtools": f"wasm-tools validate {wsm} --features={FEATURES}        # nonzero rc = REJECT",
         "spec": f"{SPEC_WASM or '$SPEC_WASM'} module.wast                  # 'validation error' = REJECT",
         "wasmtime": f"wasmtime compile -W function-references=y,gc=y {wsm} -o /dev/null   # nonzero rc = REJECT",
+        "wasmedge": f"{WASMEDGE} compile {wsm} <out.so>                    # nonzero rc = REJECT",
         "v8": f"{NODE or 'node'} {ORACLE} {wsm} __validate__",
         "custom": os.environ.get("CUSTOM_CMD", "$CUSTOM_CMD").format(wat=wp, wasm=wsm, export=ex),
     }

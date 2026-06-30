@@ -6,20 +6,24 @@ then asks every engine whether it rejects it (a SUT that accepts an ill-typed mo
 Operations:
   op-slot       re-point one op's type slot (call_indirect / call_ref / array.* / struct.* /
                 ref.test / ref.cast / br_on_cast) at every other declared + abstract type
+  tag-use       re-point throw / catch / catch_ref at a different declared exception tag
   drop-sub      drop a declared supertype: `(sub $parent (` -> `(sub (`
   flip-sub      re-point a supertype at a different declared type: `(sub $a (` -> `(sub $b (`
-  reorder-rec   swap the first two members of a `(rec ...)` group -> different iso-recursive
+  reorder-rec   swap / rotate / reverse members of a `(rec ...)` group -> different iso-recursive
                 identity (the canonicalization edge that broke Talos on type-rec.wast)
 """
 import re
 
 TYPE_DECL = re.compile(r"\(type\s+(\$\w+)\s*\(")
+TAG_DECL = re.compile(r"\(tag\s+(\$\w+)")
 ABSTRACT_HT = ["any", "eq", "i31", "struct", "array", "none", "func", "nofunc", "extern", "noextern"]
 _HT = "|".join(ABSTRACT_HT)
 
 OPS = [
     (re.compile(r"(call_indirect\s+\(type\s+)(\$\w+)(\s*\))"),                       "call_indirect", "typeidx"),
+    (re.compile(r"(return_call_indirect\s+\(type\s+)(\$\w+)(\s*\))"),                "return_call_indirect", "typeidx"),
     (re.compile(r"(call_ref\s+)(\$\w+)()"),                                          "call_ref",      "typeidx"),
+    (re.compile(r"(return_call_ref\s+)(\$\w+)()"),                                   "return_call_ref", "typeidx"),
     (re.compile(r"(array\.get(?:_[su])?\s+)(\$\w+)()"),                              "array.get",     "typeidx"),
     (re.compile(r"(array\.set\s+)(\$\w+)()"),                                        "array.set",     "typeidx"),
     (re.compile(r"(struct\.get(?:_[su])?\s+)(\$\w+)()"),                             "struct.get",    "typeidx"),
@@ -31,6 +35,11 @@ OPS = [
 ]
 
 SUB = re.compile(r"\(sub\s+(\$\w+)\s+\(")          # a `(sub $parent (...` declaration with a supertype
+TAG_USES = [
+    (re.compile(r"(\bthrow\s+)(\$\w+)"), "throw-tag"),
+    (re.compile(r"(\bcatch\s+)(\$\w+)"), "catch-tag"),
+    (re.compile(r"(\bcatch_ref\s+)(\$\w+)"), "catch_ref-tag"),
+]
 
 
 def _balanced(text, idx):
@@ -83,6 +92,7 @@ def _single(wat):
     """One mutation: return [(label, variant_wat), ...] — type-relationship / op breakages of `wat`."""
     out = []
     declared = list(dict.fromkeys(TYPE_DECL.findall(wat)))
+    tags = list(dict.fromkeys(TAG_DECL.findall(wat)))
 
     # (1) op-slot sweep: re-point the earliest op slot at every candidate type.
     best = None
@@ -105,7 +115,18 @@ def _single(wat):
                 out.append((f"flip-sub@{parent.lstrip('$')}->{t.lstrip('$')}",
                             wat[:m.start()] + f"(sub {t} (" + wat[m.end():]))
 
-    # (3) rec-group identity: swap the first two members of each rec group (iso-recursive edge).
+    # (3) exception tag uses: re-point throw/catch/catch_ref at another declared tag. This tends to create
+    #     arity / payload-type / handler-routing mistakes that validation must reject.
+    if len(tags) > 1:
+        for rex, label in TAG_USES:
+            for m in rex.finditer(wat):
+                cur = m.group(2)
+                for t in tags:
+                    if t != cur:
+                        out.append((f"{label}@{cur.lstrip('$')}->{t.lstrip('$')}",
+                                    wat[:m.start()] + m.group(1) + t + wat[m.end():]))
+
+    # (4) rec-group identity: swap / rotate / reverse members of each rec group (iso-recursive edge).
     for m in re.finditer(r"\(rec\b", wat):
         end = _balanced(wat, m.start())
         inner = wat[m.start() + 4:end - 1]                      # strip "(rec" ... ")"
@@ -114,15 +135,20 @@ def _single(wat):
             (sa, ea), (sb, eb) = kids[0], kids[1]
             swapped = inner[:sa] + inner[sb:eb] + inner[ea:sb] + inner[sa:ea] + inner[eb:]
             out.append(("reorder-rec", wat[:m.start()] + "(rec" + swapped + ")" + wat[end:]))
+        if len(kids) >= 3:
+            parts = [inner[a:b] for a, b in kids]
+            prefix, suffix = inner[:kids[0][0]], inner[kids[-1][1]:]
+            out.append(("rotate-rec", wat[:m.start()] + "(rec" + prefix + "".join(parts[1:] + parts[:1]) + suffix + ")" + wat[end:]))
+            out.append(("reverse-rec", wat[:m.start()] + "(rec" + prefix + "".join(reversed(parts)) + suffix + ")" + wat[end:]))
 
-    # (4) nullability variance: toggle `null` in each `(ref [null] X)` — probes covariance of refs.
+    # (5) nullability variance: toggle `null` in each `(ref [null] X)` — probes covariance of refs.
     for m in re.finditer(r"\(ref\s+(null\s+)?(\$\w+|" + _HT + r")\)", wat):
         has_null, ty = m.group(1), m.group(2)
         rep = f"(ref {ty})" if has_null else f"(ref null {ty})"
         out.append((("drop-null@" if has_null else "add-null@") + ty.lstrip("$"),
                     wat[:m.start()] + rep + wat[m.end():]))
 
-    # (5) ref-swap: re-point each declared-type `(ref [null] $x)` at every other declared type.
+    # (6) ref-swap: re-point each declared-type `(ref [null] $x)` at every other declared type.
     for m in re.finditer(r"\(ref\s+(null\s+)?(\$\w+)\)", wat):
         nullp, cur = m.group(1) or "", m.group(2)
         for t in declared:
@@ -130,12 +156,12 @@ def _single(wat):
                 out.append((f"ref-swap@{cur.lstrip('$')}->{t.lstrip('$')}",
                             wat[:m.start()] + f"(ref {nullp}{t})" + wat[m.end():]))
 
-    # (6) final-toggle: add / remove `final` on each sub type — probes the no-subtyping-of-final rule.
+    # (7) final-toggle: add / remove `final` on each sub type — probes the no-subtyping-of-final rule.
     for m in re.finditer(r"\(sub\s+(final\s+)?", wat):
         rep = "(sub " if m.group(1) else "(sub final "
         out.append(("drop-final" if m.group(1) else "add-final", wat[:m.start()] + rep + wat[m.end():]))
 
-    # (7) cast ladders: wrap a struct.new / array.new in a value-preserving up-and-down ref.cast
+    # (8) cast ladders: wrap a struct.new / array.new in a value-preserving up-and-down ref.cast
     #     chain of growing depth. Every cast genuinely succeeds (the value IS each of those types),
     #     so the result is unchanged — but it hammers the engine's ref.cast lowering, the GC-codegen
     #     surface where mature engines actually have bugs (and that the validator can't catch).

@@ -9,10 +9,10 @@ exercise it — (assert_return (invoke "fn" args) result) / (assert_trap ...). T
 assert is the spec author's own expected result, so it acts as a fallback oracle
 (conformance). A bare .wat is accepted too — exercised by (invoke "f").
 
-Run it with:  python3 -m miscast --sut ENGINE [--mode replay|mutate|smith] ...
+Run it with:  python3 -m miscast --sut ENGINE [--mode replay|mutate|smith|callref|all|hammer] ...
 
 No third-party dependencies — only the standard library plus the external CLI
-tools wasm-tools, node (>=22, for the V8 oracle) and wasmtime.
+tools wasm-tools, node (>=22, for the V8 oracle), wasmtime and wasmedge.
 
 Package layout:
   config     paths + engine-binary discovery

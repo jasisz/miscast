@@ -1,10 +1,8 @@
 # Findings
 
-Soundness and conformance divergences miscast has surfaced in maturing WebAssembly GC interpreters, each
-verified against the WebAssembly **reference interpreter** and the production engines (V8, wasmtime,
-WasmEdge) as ground truth. The mature engines are conformant across the spec corpus, the generated
-mutations, and every self-checking probe — the tool does not false-positive on them; these are all
-maturing / research interpreters.
+Soundness and conformance divergences miscast has surfaced in WebAssembly GC interpreters, each verified
+against the strongest agreeing oracle set available for that case: the WebAssembly **reference interpreter**,
+the generated self-checking oracle, and/or production engines such as V8, wasmtime and WasmEdge.
 
 The short index lives in the [README](../README.md#found-in-the-wild); this is the long form.
 
@@ -164,7 +162,7 @@ works and only the **high 32 bits are dropped**. Found by the `memory64` mode.
 
 `wasmz module.wasm f` loads and runs to completion modules that every conformant validator rejects, returning
 a value where the others reject at load — no validation of **type-section subtyping** (a subtype that
-retypes / drops a field, extends a `final` type, or exceeds the depth-63 limit) or **operand-stack typing**
+retypes / drops a field, extends a `final` type) or **operand-stack typing**
 (a block / function result of the wrong type or arity, a non-defaultable `array.new_default`). Each module is
 rejected by `wasm-tools validate` (ground truth); accepting them means ill-typed code runs. Found by the
 `invalid` battery.
@@ -220,7 +218,8 @@ zero-length array. Wizard traps `MEMORY_OOB` instead (a completeness over-trap).
 > type checker is admittedly future work; wasmz [#8](https://github.com/Ray-D-Song/wasmz/issues/8)) rather than
 > distinct bugs — Wizard is the notable case because its validator otherwise rejects everything else, so the
 > reversed `array.copy` check is a specific correctness bug, not a missing feature. The `array.copy` narrowing
-> reaches all three but the consequence differs: **wasmz** reads out-of-bounds (`0xAAAAAAAA`, a type-confusion
+> depth-limit probe is kept for compatibility tracking, not as a standalone upstream report. The `array.copy`
+> narrowing reaches all three but the consequence differs: **wasmz** reads out-of-bounds (`0xAAAAAAAA`, a type-confusion
 > memory disclosure — the most concrete; noted on wasmz #8), **Wizard** faults the host (a JVM
 > `ArrayIndexOutOfBoundsException`), and **Talos**'s runtime field-bounds check contains it (a clean error). V8,
 > wasmtime and WasmEdge reject all of it. (A reported `i31.get_s` "sign-extension" divergence turned out to be a

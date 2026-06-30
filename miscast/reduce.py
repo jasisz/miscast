@@ -68,4 +68,5 @@ def repro_metadata():
         "arch": f"{platform.system()}/{platform.machine()}",
         "wasm-tools": _tool_version(["wasm-tools", "--version"]),
         "wasmtime": _tool_version(["wasmtime", "--version"]),
+        "wasmedge": _tool_version(["wasmedge", "--version"]),
     }

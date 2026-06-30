@@ -62,6 +62,16 @@ def test_classify_split_and_agree():
        ("agree", False))
 
 
+def test_classify_selfcheck_expected_participates():
+    # Generated self-checking modes carry a baked oracle. If the only live oracle is wrong but the SUT
+    # matches the baked value, this must be an oracle split, not a false finding against the SUT.
+    v = {"wasmedge": "OK 176816129", "wasmtime": "OK 7068"}
+    eq("self-check expected prevents reciprocal false positive",
+       classify(v, "wasmtime", "OK 7068", "int", expected_is_oracle=True), ("oracle-split", False))
+    eq("self-check expected corroborates the good oracle and blames the bad SUT",
+       classify(v, "wasmedge", "OK 7068", "int", expected_is_oracle=True), ("VALUE", True))
+
+
 def test_classify_crash():
     # the SUT's engine fell over (a HOST crash, not a Wasm trap) on a module the oracles ran -> CRASH finding
     eq("host crash is a CRASH finding",
@@ -186,6 +196,27 @@ def test_arrayops():
     eq("arrayops reproduces the widening copy (Wizard#656)", any("widening" in x for x in labels), True)
     eq("arrayops reproduces the dropped-segment surface (Wizard#657)", any("dropped" in x for x in labels), True)
     eq("arrayops has both TRAP and value probes", saw_trap and saw_val, True)
+
+
+def test_callref():
+    # typed function-reference / table-call probes: call_ref, call_indirect, table bulk ops,
+    # branch-target casts, and mandated null / wrong-type traps.
+    from miscast.callref import callref_gen, _FAMILIES
+    from miscast.modes import gen_callref
+    fams, saw_trap, saw_value = set(), False, False
+    for s in range(2 * len(_FAMILIES)):
+        label, export, expected, wat = callref_gen(s)
+        eq(f"callref {s} exports f", export, "f")
+        eq(f"callref {s} is a module", wat.strip().startswith("(module"), True)
+        eq(f"callref {s} expected TRAP/OK", expected == "TRAP" or expected.startswith("OK "), True)
+        fams.add(label.split("callref-")[1])
+        saw_trap = saw_trap or expected == "TRAP"
+        saw_value = saw_value or expected.startswith("OK ")
+    cases, untested = gen_callref(None, len(_FAMILIES))
+    eq("callref mode emits one case per requested seed", len(cases), len(_FAMILIES))
+    eq("callref mode has no untested", untested, [])
+    eq("callref sweeps every family", len(fams) >= len(_FAMILIES), True)
+    eq("callref has both value and mandated-trap probes", saw_value and saw_trap, True)
 
 
 def test_castalgebra():

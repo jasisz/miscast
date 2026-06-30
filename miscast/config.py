@@ -1,7 +1,7 @@
 """Paths and engine-binary discovery.
 
 Only the standard library is used here; the actual work is done by the external
-CLI tools wasm-tools, node and wasmtime, located at import time.
+CLI tools wasm-tools, node, wasmtime and wasmedge, located at import time.
 """
 import os
 import subprocess
@@ -36,6 +36,8 @@ def find_node():
 ORACLE = os.environ.get("V8_ORACLE") or os.path.join(PKG, "oracle", "v8.js")
 NODE = os.environ.get("NODE") or find_node()
 SPEC_WASM = os.environ.get("SPEC_WASM")          # path to the WebAssembly reference interpreter `wasm` binary
+WASMEDGE = os.environ.get("WASMEDGE") or "wasmedge"
+WASMEDGE_FLAGS = os.environ.get("WASMEDGE_FLAGS", "")
 
 
 def tool_versions(engine_names):
@@ -51,6 +53,9 @@ def tool_versions(engine_names):
     if "wasmtime" in engine_names:
         wt = first_line(["wasmtime", "--version"]).split()    # "wasmtime 43.0.0 (hash date)"
         out.append("wasmtime=" + (wt[1] if len(wt) > 1 else "?"))
+    if "wasmedge" in engine_names:
+        we = first_line([WASMEDGE, "--version"]).split()      # "wasmedge version 0.16.3"
+        out.append("wasmedge=" + (we[2] if len(we) > 2 and we[1] == "version" else "?"))
     if "spec" in engine_names and SPEC_WASM:
         out.append("ref-interp")
     return "  ".join(out)

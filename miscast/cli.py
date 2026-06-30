@@ -57,7 +57,8 @@ def main():
     ap.add_argument("--mode", choices=list(MODES) + ["invalid"], default="replay",
                     help="replay/mutate (corpus), smith (random), the self-checking oracles "
                          "morphism/recgroup/compose (compose subsumes the old castbr/externconvert/eh/exnstack), "
-                         "invalid (spec-invalid validation battery), or 'all' for the whole suite + the battery")
+                         "invalid (spec-invalid validation battery), 'all' for the GC oracle suite + the battery, "
+                         "or 'hammer' for all + trapline/memory64/arrayops/callref")
     ap.add_argument("--seeds", default=SEEDS_DEFAULT, help="dir of .wast / .wat corpus")
     ap.add_argument("--sut", required=True, help="engine under test (e.g. wasmtime, custom); the rest are oracles")
     ap.add_argument("--oracles", help="oracle engines to use, comma-separated (the SUT is always "
@@ -71,7 +72,7 @@ def main():
     args = ap.parse_args()
 
     if not ENGINES:
-        sys.exit("no engines detected (need node+oracle, wasmtime, or SPEC_WASM/CUSTOM_CMD)")
+        sys.exit("no engines detected (need node+oracle, wasmtime, wasmedge, or SPEC_WASM/CUSTOM_CMD)")
     if args.sut not in ENGINES:
         sys.exit(f"--sut {args.sut} not available; detected: {', '.join(ENGINES) or '(none)'}")
     engines = dict(ENGINES)
@@ -188,7 +189,7 @@ def main():
     else:
         cases, stats = load_corpus(args.seeds)
         work, untested = ([], 0) if args.mode == "invalid" else MODES[args.mode](cases, args.n)
-        inval = invalid_battery() if args.mode in ("invalid", "all") else []
+        inval = invalid_battery() if args.mode in ("invalid", "all", "hammer") else []
         print(f"# mode={args.mode}  files={stats['files']}  modules={stats['modules']}  cases={len(work)}"
               + (f"  invalid={len(inval)}" if inval else ""))
         print(f"# engines={'+'.join(base_cols)}  sut={sut}  jobs={args.jobs}")

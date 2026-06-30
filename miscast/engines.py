@@ -10,7 +10,7 @@ import shlex
 import shutil
 import tempfile
 
-from .config import NODE, ORACLE, WORK, SPEC_WASM
+from .config import NODE, ORACLE, WORK, SPEC_WASM, WASMEDGE, WASMEDGE_FLAGS
 from .toolchain import _run
 
 _NUM = re.compile(r"-?(?:0x[0-9a-fA-F]+|\d+\.\d+(?:[eE][+-]?\d+)?|\d+(?:[eE][+-]?\d+)?|inf|nan)", re.I)
@@ -52,6 +52,26 @@ def be_wasmtime(wat, wasm, export, args):
     if r.returncode != 0:
         return "UNSUP"
     return "OK " + out if out else "OK _"
+
+
+def _wasmedge_run_flags():
+    return shlex.split(WASMEDGE_FLAGS)
+
+
+def be_wasmedge(wat, wasm, export, args):
+    r = _run([WASMEDGE, "run"] + _wasmedge_run_flags() + ["--reactor", wasm, export] + [v for _, v in args])
+    out, both = r.stdout.strip(), r.stdout + r.stderr
+    low = both.lower()
+    if _CRASH.search(both):
+        return "CRASH"
+    if "not found" in low and ("export" in low or "function" in low):
+        return "NOEXPORT"
+    if _TRAP.search(both):
+        return "TRAP"
+    if r.returncode != 0:
+        return "UNSUP"
+    nums = _NUM.findall(out)
+    return "OK " + nums[-1] if nums else "OK _"
 
 
 MC_RUNNER = os.environ.get("MC_RUNNER") or os.path.join(
@@ -148,6 +168,8 @@ def repro_command(engine, wat_path, wasm_path, export, args, wast_path=None):
     if engine == "wasmtime":
         return " ".join(["wasmtime", "run", "--invoke", export,
                          "-W", "function-references=y,gc=y,exceptions=y,tail-call=y", wasm_path] + a)
+    if engine == "wasmedge":
+        return " ".join([WASMEDGE, "run"] + _wasmedge_run_flags() + ["--reactor", wasm_path, export] + a)
     if engine == "mcr":
         return " ".join([MC_RUNNER, wasm_path, "--invoke", export]
                         + sum([["--arg", f"{t}:{v}"] for t, v in args if t in ("i32", "i64")], []))
@@ -195,6 +217,28 @@ def _v8_validate(wsm):
     return "UNSUP"
 
 
+def _wasmedge_validate(wsm):
+    if wsm is None:
+        return "UNSUP"
+    fd, out_path = tempfile.mkstemp(suffix=".so", dir=WORK)
+    os.close(fd)
+    try:
+        os.unlink(out_path)
+    except OSError:
+        pass
+    try:
+        r = _run([WASMEDGE, "compile", wsm, out_path])
+        both = r.stdout + r.stderr
+        if r.returncode == 0:
+            return "ACCEPT"
+        return "REJECT" if "validation failed" in both.lower() or _VALERR.search(both) else "UNSUP"
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+
+
 def _custom_validate(module_wat, wp, wsm):
     vtmpl = os.environ.get("CUSTOM_VALIDATE_CMD")
     if vtmpl:                                 # the SUT exposes a real validate/load step -> use it directly
@@ -228,6 +272,8 @@ def validate_module(module_wat, engines):
             out[en] = ("UNSUP" if wsm is None else
                        ("ACCEPT" if _run(["wasmtime", "compile", "-W", "function-references=y,gc=y,exceptions=y,tail-call=y",
                                           wsm, "-o", os.devnull]).returncode == 0 else "REJECT"))
+        elif en == "wasmedge":
+            out[en] = _wasmedge_validate(wsm)
         elif en == "v8" and NODE:
             out[en] = _v8_validate(wsm)
         elif en == "custom":
@@ -274,6 +320,8 @@ def detect_engines():
         eng["v8"] = be_v8
     if shutil.which("wasmtime"):
         eng["wasmtime"] = be_wasmtime
+    if shutil.which(WASMEDGE):
+        eng["wasmedge"] = be_wasmedge
     if os.path.exists(MC_RUNNER):                        # the wasmtime-crate embedder (exact bits, always gc-capable)
         eng["mcr"] = be_mc_runner
     if SPEC_WASM and os.path.exists(SPEC_WASM):          # the WebAssembly reference interpreter
@@ -284,4 +332,4 @@ def detect_engines():
 
 
 ENGINES = detect_engines()
-ENGINE_ORDER = ["v8", "wasmtime", "mcr", "spec", "custom"]
+ENGINE_ORDER = ["v8", "wasmtime", "wasmedge", "mcr", "spec", "custom"]
