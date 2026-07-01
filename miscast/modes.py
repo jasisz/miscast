@@ -11,11 +11,20 @@
            nest, or an exnref carry — self-checking by construction; subsumes castbr / externconvert / eh / exnstack
   trapline trap-boundary generator: each trappable op swept across its {edge-1, edge, edge+1} with a baked TRAP/constant
   memory64 high (>= 2^32) linear-memory address must TRAP, not wrap to its low 32 bits (sandbox-escape probe)
+  memcross multi-memory / bulk-memory cross-index probes with data init, copy/fill, grow and OOB traps
   arrayops bulk GC array ops (copy / fill / new_data / new_elem) swept for boundary, overlap, OOB and element variance
   callref  typed function refs: call_ref / call_indirect / table bulk / br_on_cast[_fail] with baked call results or traps
+  simdlane SIMD lane algebra: shuffle/swizzle, saturation, signedness, extmul/dot, memory lanes and bitmasks
+  nanjet  f32/f64 NaN payload bit-preservation through runtime storage/control-flow paths
+  flowmerge control-flow joins and stack-polymorphic dead code carrying GC refs through if/select/br/br_table/try_table
+  refalias reference identity / alias preservation through bulk ops, extern, casts, EH and call_ref
+  mutalias mutable alias write-visibility through storage, bulk ops, extern, casts, EH, call_ref and type views
+  packedops runtime packed-GC storage: i8/i16 struct/array set/fill/copy with sign/zero extension and truncation
+  evalorder side-effecting operand order for bulk ops, calls, stores, aggregate constructors, EH payloads
+  heapstorm stateful GC heap programs: many aliasing storage/copy/call/EH/extern operations plus a shadow checksum
   castalgebra subtype / cast correctness: ref.test / ref.cast swept across the type lattice + structural-twin canonicalization + self-consistency
   constinit GC const-expr init (global / elem / data: struct.new / array.new / ref.i31, extended-const) evaluated to a baked value
-  hammer   broad deterministic sweep: all + trapline + memory64 + arrayops + callref + invalid
+  hammer   broad deterministic sweep: all + trapline + memory64 + memcross + arrayops + callref + simdlane + nanjet + flowmerge + refalias + mutalias + packedops + evalorder + heapstorm + invalid
   invalid  a battery of spec-invalid GC modules: does the SUT reject them? (validation differential)
 """
 import os
@@ -27,8 +36,17 @@ from .recgroup import gen as recgroup_gen
 from .compose import compose_gen
 from .trapline import trapline_gen
 from .memory64 import memory64_gen
+from .memcross import memcross_gen
 from .arrayops import arrayops_gen
 from .callref import callref_gen
+from .simdlane import simdlane_gen
+from .nanjet import nanjet_gen
+from .flowmerge import flowmerge_gen
+from .refalias import refalias_gen
+from .mutalias import mutalias_gen
+from .packedops import packedops_gen
+from .evalorder import evalorder_gen, _FAMILIES as EVALORDER_FAMILIES
+from .heapstorm import heapstorm_gen
 from .castalgebra import castalgebra_gen
 from .constinit import constinit_gen
 from .mutate import mutate_module
@@ -77,7 +95,7 @@ def gen_morphism(_cases, n):
     be wrong about GC, so a conformant engine returns 0 on every program — but a nonzero result also says
     WHICH representation is at fault."""
     out = []
-    for i in range(n):
+    for i in range(min(n, len(EVALORDER_FAMILIES))):
         K = [12, 16, 24, 32, 48][i % 5]
         out.append((f"morphism{i}", morphism_gen(i, K), "check", [], "OK 0", "int"))
     return out, []
@@ -131,6 +149,16 @@ def gen_memory64(_cases, n):
     return out, []
 
 
+def gen_memcross(_cases, n):
+    """Multi-memory / bulk-memory cross-index probes (see memcross.py): several memories, passive data init,
+    memory.copy/fill isolation, overlapping memmove, nonzero-index memory.grow, and selected-memory OOB traps."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = memcross_gen(i)
+        out.append((f"memcross{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
 def gen_arrayops(_cases, n):
     """Bulk GC array ops (see arrayops.py): array.copy / array.fill / array.new_data swept for boundary,
     overlap (memmove), OOB (must trap), and element-type variance — including the VALID widening copy that
@@ -150,6 +178,92 @@ def gen_callref(_cases, n):
     for i in range(n):
         label, export, expected, wat = callref_gen(i)
         out.append((f"callref{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
+def gen_simdlane(_cases, n):
+    """SIMD lane-algebra probes (see simdlane.py): byte shuffles, swizzles, saturating narrows,
+    signed/unsigned extraction, extmul/dot arithmetic, lane load/store, q15 rounding, and bitmasks checked
+    against a Python-computed checksum."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = simdlane_gen(i)
+        out.append((f"simdlane{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
+def gen_nanjet(_cases, n):
+    """NaN payload bit-preservation probes (see nanjet.py): f32/f64 NaNs are routed through runtime
+    fields, arrays, globals, select, EH, call_ref, memory, sign ops, and br_table, then returned as i64 bits."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = nanjet_gen(i)
+        out.append((f"nanjet{i}|{label}", wat, export, [], expected, "int64"))
+    return out, []
+
+
+def gen_flowmerge(_cases, n):
+    """Control-flow merge probes (see flowmerge.py): `if`, typed `select`, `br`, `br_table`, `try_table`, and
+    stack-polymorphic dead code after `unreachable`, all carrying GC refs through merge points with a baked
+    value or trap oracle."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = flowmerge_gen(i)
+        out.append((f"flowmerge{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
+def gen_refalias(_cases, n):
+    """Reference-identity probes (see refalias.py): `ref.eq` checks that a GC reference survives fields,
+    arrays, bulk copies, tables, extern round-trips, casts, EH, and `call_ref` without being cloned or
+    substituted; negative controls check equal-looking fresh objects are still distinct."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = refalias_gen(i)
+        out.append((f"refalias{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
+def gen_mutalias(_cases, n):
+    """Mutable-alias probes (see mutalias.py): mutate an object through one alias and read it through another
+    after storage, bulk copies, extern/cast/EH/call_ref paths, structural-twin casts, or subtype views."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = mutalias_gen(i)
+        out.append((f"mutalias{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
+def gen_packedops(_cases, n):
+    """Runtime packed-GC storage probes (see packedops.py): mutable i8/i16 struct fields and arrays,
+    write truncation, signed/unsigned reads, subtype field views, array.fill, and overlapping array.copy."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = packedops_gen(i)
+        out.append((f"packedops{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
+def gen_evalorder(_cases, n):
+    """Side-effecting operand-order probes (see evalorder.py): every operand position calls `next()`, then
+    bulk memory/table/array ops, call_ref/call_indirect/return_call_ref, stores, aggregate constructors,
+    br_table/select, and EH payload routing return a baked checksum that proves the exact evaluation/pop
+    order."""
+    out = []
+    for i in range(min(n, len(EVALORDER_FAMILIES))):
+        label, export, expected, wat = evalorder_gen(i)
+        out.append((f"evalorder{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
+def gen_heapstorm(_cases, n):
+    """Stateful GC heap-storm probes (see heapstorm.py): interleave many aliasing storage, bulk-copy,
+    table/global, br_on_cast, EH, extern, call_ref, and return_call_ref operations, then compare a weighted
+    checksum against a Python shadow model."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = heapstorm_gen(i)
+        out.append((f"heapstorm{i}|{label}", wat, export, [], expected, "int"))
     return out, []
 
 
@@ -199,11 +313,17 @@ def gen_all(cases, n):
 def gen_hammer(cases, n):
     """A broad deterministic engine sweep. `all` focuses on GC soundness/value-preservation; this adds the
     mature-runtime stress surfaces that are otherwise separate: trap boundaries, memory64 high-address
-    aliasing, bulk GC array operations, and typed function-reference calls. The invalid validation battery is
-    added by the CLI."""
+    aliasing, multi-memory cross-indexing, bulk GC array operations, typed function-reference calls, SIMD lane
+    algebra, NaN payload preservation, control-flow merge typing, reference identity preservation, mutable-alias write visibility,
+    packed-GC storage, side-effecting operand order, and stateful heap storms. The invalid validation battery
+    is added by the CLI."""
     out, untested = gen_all(cases, n)
-    for gen, count in ((gen_trapline, min(n, 48)), (gen_memory64, min(n, 36)), (gen_arrayops, min(n, 44)),
-                       (gen_callref, min(n, 36))):
+    for gen, count in ((gen_trapline, min(n, 48)), (gen_memory64, min(n, 36)), (gen_memcross, min(n, 48)),
+                       (gen_arrayops, min(n, 44)), (gen_callref, min(n, 36)), (gen_simdlane, min(n, 64)),
+                       (gen_nanjet, min(n, 72)),
+                       (gen_flowmerge, min(n, 40)), (gen_refalias, min(n, 40)), (gen_mutalias, min(n, 40)),
+                       (gen_packedops, min(n, 48)), (gen_evalorder, min(n, 48)),
+                       (gen_heapstorm, min(n, 48))):
         w, u = gen(cases, count)
         out += w
         untested += u
@@ -212,5 +332,14 @@ def gen_hammer(cases, n):
 
 MODES = {"replay": gen_replay, "mutate": gen_mutate, "smith": gen_smith, "morphism": gen_morphism,
          "recgroup": gen_recgroup, "compose": gen_compose, "trapline": gen_trapline, "memory64": gen_memory64,
-         "arrayops": gen_arrayops, "callref": gen_callref, "castalgebra": gen_castalgebra,
+         "memcross": gen_memcross,
+         "arrayops": gen_arrayops, "callref": gen_callref, "simdlane": gen_simdlane,
+         "nanjet": gen_nanjet,
+         "flowmerge": gen_flowmerge,
+         "refalias": gen_refalias,
+         "mutalias": gen_mutalias,
+         "packedops": gen_packedops,
+         "evalorder": gen_evalorder,
+         "heapstorm": gen_heapstorm,
+         "castalgebra": gen_castalgebra,
          "constinit": gen_constinit, "all": gen_all, "hammer": gen_hammer}

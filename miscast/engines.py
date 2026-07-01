@@ -314,6 +314,25 @@ def conformance_file(src_path, engines):
     return out
 
 
+def generated_wast_file(src_path, engines):
+    """Generated stateful .wast scripts contain baked self-checking directives such as assert_return,
+    assert_trap, and assert_unlinkable. Unlike official spec files, their diagnostics are not part of the
+    test, so Wasmtime's native wast runner is a useful engine here."""
+    from .seqscript import WASMTIME_WAST_FLAGS
+    cwast = os.environ.get("CUSTOM_WAST_CMD")
+    out = {}
+    for en in engines:
+        if en == "wasmtime":
+            out[en] = _native_wast(["wasmtime", "wast", "-W", WASMTIME_WAST_FLAGS, src_path])
+        elif en == "spec" and SPEC_WASM:
+            out[en] = _native_wast([SPEC_WASM, src_path])
+        elif en == "custom" and cwast:
+            out[en] = _native_wast(shlex.split(cwast.format(wast=src_path)))
+        else:
+            out[en] = "n/a"
+    return out
+
+
 def detect_engines():
     eng = {}
     if NODE and os.path.exists(ORACLE):
@@ -328,6 +347,8 @@ def detect_engines():
         eng["spec"] = be_spec
     if os.environ.get("CUSTOM_CMD"):                     # any interpreter under test, no code change
         eng["custom"] = make_be_cmd(os.environ["CUSTOM_CMD"])
+    elif os.environ.get("CUSTOM_WAST_CMD"):              # script-only custom SUT for stateful .wast modes
+        eng["custom"] = lambda *_args: "SUT_NA"
     return eng
 
 

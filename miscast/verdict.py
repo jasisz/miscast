@@ -96,6 +96,23 @@ def classify_conformance(verdicts, sut):
     return "sut-stateful-na", False                  # one-shot SUT can't execute a stateful script
 
 
+def classify_generated_script(verdicts, sut):
+    """Generated .wast scripts are self-checking: their assert_return/assert_trap/assert_unlinkable
+    directives are the oracle. Other native script runners can corroborate, but a lone SUT PASS is still
+    meaningful."""
+    ss = verdicts.get(sut, "n/a")
+    oracles = [v for e, v in verdicts.items() if e != sut and v in ("PASS", "FAIL")]
+    if any(v == "FAIL" for v in oracles):
+        return "oracle-split", False
+    if ss == "PASS":
+        return "agree", False
+    if ss == "FAIL":
+        return "VALUE", True
+    if ss == "UNSUP":
+        return "sut-reject", True
+    return "sut-stateful-na", False
+
+
 def classify(verdicts, sut, expected, rtype="int", expected_is_oracle=False):
     if sut not in verdicts:
         return "no-sut", False

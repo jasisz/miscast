@@ -17,12 +17,13 @@ from concurrent.futures import ThreadPoolExecutor
 from .config import SEEDS_DEFAULT, WORK, tool_versions
 from .engines import ENGINES, ENGINE_ORDER, wasmtime_has_gc
 from .modes import MODES
+from .seqscript import write_seqscript_groups
 from .invalid import segs as invalid_battery
 from .mutate import mutate_module
 from .reduce import dedupe_summary
 from .toolchain import prepare
 from .wast import load_corpus, load_script_corpus
-from .runner import differential, validation_differential, conformance_differential
+from .runner import differential, validation_differential, conformance_differential, script_differential
 from .repro import write_repro
 
 # Verdict -> severity class, in report order. The class names ARE the headline taxonomy.
@@ -54,11 +55,12 @@ def _cell(v, w=11):
 def main():
     ap = argparse.ArgumentParser(prog="miscast",
                                  description="a .wast-native differential tester for WebAssembly GC subtype soundness")
-    ap.add_argument("--mode", choices=list(MODES) + ["invalid"], default="replay",
+    ap.add_argument("--mode", choices=list(MODES) + ["seqscript", "invalid"], default="replay",
                     help="replay/mutate (corpus), smith (random), the self-checking oracles "
                          "morphism/recgroup/compose (compose subsumes the old castbr/externconvert/eh/exnstack), "
+                         "seqscript (generated stateful .wast scripts), "
                          "invalid (spec-invalid validation battery), 'all' for the GC oracle suite + the battery, "
-                         "or 'hammer' for all + trapline/memory64/arrayops/callref")
+                         "or 'hammer' for all + trapline/memory64/memcross/arrayops/callref/simdlane/nanjet/flowmerge/refalias/mutalias/packedops/evalorder/heapstorm")
     ap.add_argument("--seeds", default=SEEDS_DEFAULT, help="dir of .wast / .wat corpus")
     ap.add_argument("--sut", required=True, help="engine under test (e.g. wasmtime, custom); the rest are oracles")
     ap.add_argument("--oracles", help="oracle engines to use, comma-separated (the SUT is always "
@@ -186,6 +188,13 @@ def main():
             section("validation — mutated ILL-TYPED variants: does the SUT reject them?",
                     pool("validation", lambda s: validation_differential(s, sut, engines), invalid_segs),
                     ["wtools"] + base_cols)
+    elif args.mode == "seqscript":
+        groups = write_seqscript_groups(args.n)
+        print(f"# mode=seqscript  generated={len(groups)}  stateful-actions={sum(g['nstateful'] for g in groups)}")
+        print(f"# engines={'+'.join(base_cols)}  sut={sut}  jobs={args.jobs}")
+        print(f"# tools={tool_versions(engines)}", flush=True)
+        section("conformance — generated stateful .wast scripts run natively in order",
+                pool("seqscript", lambda g: script_differential(g, sut, engines), groups), base_cols)
     else:
         cases, stats = load_corpus(args.seeds)
         work, untested = ([], 0) if args.mode == "invalid" else MODES[args.mode](cases, args.n)

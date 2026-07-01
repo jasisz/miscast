@@ -7,7 +7,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from miscast.verdict import _ikey, _fkey, classify, classify_validation, classify_conformance
+from miscast.verdict import _ikey, _fkey, classify, classify_validation, classify_conformance, classify_generated_script
 from miscast.engines import _CRASH
 from miscast.wast import _norm_arg
 
@@ -114,6 +114,17 @@ def test_classify_conformance():
        ("sut-stateful-na", False))
 
 
+def test_classify_generated_script():
+    eq("generated script self-oracle pass", classify_generated_script({"wasmtime": "PASS"}, "wasmtime"),
+       ("agree", False))
+    eq("generated script self-oracle fail", classify_generated_script({"wasmtime": "FAIL"}, "wasmtime"),
+       ("VALUE", True))
+    eq("generated script corroborated pass",
+       classify_generated_script({"wasmtime": "PASS", "custom": "PASS"}, "custom"), ("agree", False))
+    eq("generated script rejects unsupported",
+       classify_generated_script({"wasmtime": "PASS", "custom": "UNSUP"}, "custom"), ("sut-reject", True))
+
+
 def test_compose():
     # the consolidated compositional generator (chain / nest / exn shapes) that subsumes the old
     # castbr / externconvert / eh / exnstack modes. Pure structural checks; engine agreement is re-confirmed
@@ -180,6 +191,26 @@ def test_memory64():
     eq("memory64 has an in-bounds control", saw_ctrl, True)
 
 
+def test_memcross():
+    # Multi-memory probes: cross-memory copy/init/fill/grow plus selected-memory OOB traps.
+    from miscast.memcross import memcross_gen, _FAMILIES
+    from miscast.modes import gen_memcross
+    fams, saw_trap, saw_grow = set(), False, False
+    for s in range(3 * len(_FAMILIES)):
+        label, export, expected, wat = memcross_gen(s)
+        eq(f"memcross {s} exports f", export, "f")
+        eq(f"memcross {s} is a module", wat.strip().startswith("(module"), True)
+        eq(f"memcross {s} expected TRAP/OK", expected == "TRAP" or expected.startswith("OK "), True)
+        fams.add(label.split("memcross-")[1])
+        saw_trap = saw_trap or expected == "TRAP"
+        saw_grow = saw_grow or "memory.grow $b" in wat
+    cases, untested = gen_memcross(None, len(_FAMILIES))
+    eq("memcross mode emits one case per requested seed", len(cases), len(_FAMILIES))
+    eq("memcross mode has no untested", untested, [])
+    eq("memcross sweeps every family", len(fams) >= len(_FAMILIES), True)
+    eq("memcross includes grow and trap probes", saw_grow and saw_trap, True)
+
+
 def test_arrayops():
     from miscast.arrayops import arrayops_gen, _FAMILIES
     fams, saw_trap, saw_val = set(), False, False
@@ -217,6 +248,103 @@ def test_callref():
     eq("callref mode has no untested", untested, [])
     eq("callref sweeps every family", len(fams) >= len(_FAMILIES), True)
     eq("callref has both value and mandated-trap probes", saw_value and saw_trap, True)
+
+
+def test_simdlane():
+    # SIMD lane algebra: independent non-GC vector path for byte order, signedness, saturation and memory lanes.
+    from miscast.simdlane import simdlane_gen, _FAMILIES
+    from miscast.modes import gen_simdlane
+    fams, saw_mem, saw_sat = set(), False, False
+    for s in range(3 * len(_FAMILIES)):
+        label, export, expected, wat = simdlane_gen(s)
+        eq(f"simdlane {s} exports f", export, "f")
+        eq(f"simdlane {s} is a module", wat.strip().startswith("(module"), True)
+        eq(f"simdlane {s} expected OK", expected.startswith("OK "), True)
+        fams.add(label.split("simdlane-")[1])
+        saw_mem = saw_mem or "load8_lane" in wat and "store8_lane" in wat
+        saw_sat = saw_sat or "narrow_i16x8" in wat or "q15mulr_sat_s" in wat
+    cases, untested = gen_simdlane(None, len(_FAMILIES))
+    eq("simdlane mode emits one case per requested seed", len(cases), len(_FAMILIES))
+    eq("simdlane mode has no untested", untested, [])
+    eq("simdlane sweeps every family", len(fams) >= len(_FAMILIES), True)
+    eq("simdlane includes memory lanes and saturation probes", saw_mem and saw_sat, True)
+
+
+def test_flowmerge():
+    # Control-flow merge probes: refs through if/select/br/br_table/try_table plus stack-polymorphic dead code.
+    from miscast.flowmerge import flowmerge_gen, _FAMILIES
+    from miscast.modes import gen_flowmerge
+    fams, saw_trap, saw_value = set(), False, False
+    for s in range(2 * len(_FAMILIES)):
+        label, export, expected, wat = flowmerge_gen(s)
+        eq(f"flowmerge {s} exports f", export, "f")
+        eq(f"flowmerge {s} is a module", wat.strip().startswith("(module"), True)
+        eq(f"flowmerge {s} expected TRAP/OK", expected == "TRAP" or expected.startswith("OK "), True)
+        fams.add(label.split("flowmerge-")[1].split("[")[0])
+        saw_trap = saw_trap or expected == "TRAP"
+        saw_value = saw_value or expected.startswith("OK ")
+    cases, untested = gen_flowmerge(None, len(_FAMILIES))
+    eq("flowmerge mode emits one case per requested seed", len(cases), len(_FAMILIES))
+    eq("flowmerge mode has no untested", untested, [])
+    eq("flowmerge sweeps every family", len(fams) >= len(_FAMILIES), True)
+    eq("flowmerge has both value and mandated-trap probes", saw_value and saw_trap, True)
+
+
+def test_refalias():
+    # Reference identity probes: ref.eq observes alias preservation, not just field-value preservation.
+    from miscast.refalias import refalias_gen, _FAMILIES
+    from miscast.modes import gen_refalias
+    fams, saw_alias, saw_not_alias = set(), False, False
+    for s in range(2 * len(_FAMILIES)):
+        label, export, expected, wat = refalias_gen(s)
+        eq(f"refalias {s} exports f", export, "f")
+        eq(f"refalias {s} is a module", wat.strip().startswith("(module"), True)
+        eq(f"refalias {s} expected OK", expected in ("OK 0", "OK 1"), True)
+        fams.add(label.split("refalias-")[1])
+        saw_alias = saw_alias or expected == "OK 1"
+        saw_not_alias = saw_not_alias or expected == "OK 0"
+    cases, untested = gen_refalias(None, len(_FAMILIES))
+    eq("refalias mode emits one case per requested seed", len(cases), len(_FAMILIES))
+    eq("refalias mode has no untested", untested, [])
+    eq("refalias sweeps every family", len(fams) >= len(_FAMILIES), True)
+    eq("refalias has both positive and negative identity probes", saw_alias and saw_not_alias, True)
+
+
+def test_mutalias():
+    # Mutable-alias probes: mutate through one path and read through another.
+    from miscast.mutalias import mutalias_gen, _FAMILIES
+    from miscast.modes import gen_mutalias
+    fams = set()
+    for s in range(2 * len(_FAMILIES)):
+        label, export, expected, wat = mutalias_gen(s)
+        eq(f"mutalias {s} exports f", export, "f")
+        eq(f"mutalias {s} is a module", wat.strip().startswith("(module"), True)
+        eq(f"mutalias {s} expected OK", expected.startswith("OK "), True)
+        fams.add(label.split("mutalias-")[1])
+    cases, untested = gen_mutalias(None, len(_FAMILIES))
+    eq("mutalias mode emits one case per requested seed", len(cases), len(_FAMILIES))
+    eq("mutalias mode has no untested", untested, [])
+    eq("mutalias sweeps every family", len(fams) >= len(_FAMILIES), True)
+
+
+def test_heapstorm():
+    # Stateful heap-storm probes: long aliasing operation sequences checked by a Python shadow checksum.
+    from miscast.heapstorm import heapstorm_gen, _FAMILIES
+    from miscast.modes import gen_heapstorm
+    fams, saw_throw, saw_extern = set(), False, False
+    for s in range(2 * len(_FAMILIES)):
+        label, export, expected, wat = heapstorm_gen(s)
+        eq(f"heapstorm {s} exports f", export, "f")
+        eq(f"heapstorm {s} is a module", wat.strip().startswith("(module"), True)
+        eq(f"heapstorm {s} expected OK", expected.startswith("OK "), True)
+        fams.add(label.split("heapstorm-")[1].rsplit("-", 1)[0])
+        saw_throw = saw_throw or "throw_ref" in wat
+        saw_extern = saw_extern or "extern.convert_any" in wat
+    cases, untested = gen_heapstorm(None, len(_FAMILIES))
+    eq("heapstorm mode emits one case per requested seed", len(cases), len(_FAMILIES))
+    eq("heapstorm mode has no untested", untested, [])
+    eq("heapstorm sweeps every scenario", len(fams) >= len(_FAMILIES), True)
+    eq("heapstorm includes EH rethrow and extern scenarios", saw_throw and saw_extern, True)
 
 
 def test_castalgebra():

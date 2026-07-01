@@ -2,6 +2,7 @@
 execution (per-action value/trap), validation (assert_invalid), conformance (stateful .wast)."""
 import os
 import re
+import shutil
 
 from .config import WORK, SPEC_WASM, NODE, ORACLE, FEATURES, WASMEDGE
 from .engines import repro_command
@@ -76,14 +77,24 @@ def _write_validation(name, repro, verdicts, cols):
 def _write_conformance(name, repro, verdicts, cols):
     d = _dir(name)
     src = repro.get("src", "<file>.wast")
-    lines = [f"# {name}  [stateful conformance: the whole official .wast file, run natively in order]",
+    generated = "/seqscript/" in src
+    wt_flags = ("function-references=y,gc=y,exceptions=y,tail-call=y,multi-memory=y,simd=y,bulk-memory=y"
+                if generated else "function-references=y,gc=y")
+    kind = "generated stateful .wast script" if generated else "whole official .wast file"
+    local_src = os.path.join(d, "script.wast")
+    if os.path.exists(src):
+        shutil.copyfile(src, local_src)
+    lines = [f"# {name}  [stateful conformance: the {kind}, run natively in order]",
              f"file:     {src}",
+             f"local:    {local_src if os.path.exists(local_src) else '(not copied)'}",
              f"stateful: {repro.get('nstateful', '?')} segment(s)",
              "", "verdicts (PASS = the engine conforms to the file's own asserts):"]
     lines += [f"  {c:10} {verdicts.get(c, '-')}" for c in cols]
     lines += ["", "commands:",
               f"  spec       {SPEC_WASM or '$SPEC_WASM'} {src}",
-              f"  wasmtime   wasmtime wast -W function-references=y,gc=y {src}"]
+              f"  wasmtime   wasmtime wast -W {wt_flags} {src}"]
+    if os.environ.get("CUSTOM_WAST_CMD"):
+        lines.append(f"  custom     {os.environ['CUSTOM_WAST_CMD'].format(wast=src)}")
     with open(os.path.join(d, "repro.txt"), "w") as f:
         f.write("\n".join(lines) + "\n")
     return d

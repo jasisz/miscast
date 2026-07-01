@@ -2,11 +2,12 @@
 from .toolchain import prepare
 import os
 
-from .engines import ENGINES, validate_module, conformance_file, first_export
-from .verdict import classify, classify_validation, classify_conformance
+from .engines import ENGINES, validate_module, conformance_file, generated_wast_file, first_export
+from .verdict import classify, classify_validation, classify_conformance, classify_generated_script
 
 SELFCHECK_PREFIXES = ("morphism", "recgroup", "compose", "trapline", "memory64",
-                      "arrayops", "callref", "castalgebra", "constinit")
+                      "memcross", "arrayops", "callref", "simdlane", "nanjet", "flowmerge", "refalias",
+                      "mutalias", "packedops", "evalorder", "heapstorm", "castalgebra", "constinit")
 
 
 def differential(case, sut, engines=ENGINES):
@@ -40,6 +41,16 @@ def conformance_differential(group, sut, engines=ENGINES):
     `group` = {name, src, nstateful} — one entry per file that contains stateful segments."""
     verdicts = conformance_file(group["src"], list(engines))
     verdict, isfind = classify_conformance(verdicts, sut)
+    repro = {"wat": "", "export": "(script)", "args": [], "rtype": None,
+             "wat_path": None, "wasm_path": None, "kind": "conformance",
+             "src": group["src"], "nstateful": group["nstateful"]}
+    return group["name"], verdicts, "script", verdict, isfind, repro
+
+
+def script_differential(group, sut, engines=ENGINES):
+    """Generated stateful .wast scripts: run the whole script natively, preserving state across invokes."""
+    verdicts = generated_wast_file(group["src"], list(engines))
+    verdict, isfind = classify_generated_script(verdicts, sut)
     repro = {"wat": "", "export": "(script)", "args": [], "rtype": None,
              "wat_path": None, "wasm_path": None, "kind": "conformance",
              "src": group["src"], "nstateful": group["nstateful"]}

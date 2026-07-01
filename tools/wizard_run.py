@@ -15,7 +15,7 @@ import tempfile
 
 WIZARD = os.environ.get("WIZARD_BIN", os.path.expanduser("~/wasm-engines/wizard/wizeng"))
 TIMEOUT = int(os.environ.get("WIZARD_TIMEOUT", "30"))
-_PURE_NUM = re.compile(r"\s*-?(?:0x[0-9a-fA-F]+|\d+)\s*\Z")
+_PURE_NUM = re.compile(r"\s*(-?(?:0x[0-9a-fA-F]+|\d+))(?:[uU]?[lL])?\s*\Z")
 
 
 def main():
@@ -42,8 +42,9 @@ def main():
                               "cast failure", "execution failed")):
         print("TRAP")
         return 1
-    if _PURE_NUM.match(stdout):
-        print(str(int(stdout, 0)))
+    m = _PURE_NUM.match(stdout)
+    if m:
+        print(str(int(m.group(1), 0)))
         return 0
     if both:
         print(both, file=sys.stderr)

@@ -9,7 +9,7 @@ exercise it — (assert_return (invoke "fn" args) result) / (assert_trap ...). T
 assert is the spec author's own expected result, so it acts as a fallback oracle
 (conformance). A bare .wat is accepted too — exercised by (invoke "f").
 
-Run it with:  python3 -m miscast --sut ENGINE [--mode replay|mutate|smith|callref|all|hammer] ...
+Run it with:  python3 -m miscast --sut ENGINE [--mode replay|mutate|smith|seqscript|memcross|callref|simdlane|nanjet|flowmerge|refalias|mutalias|packedops|evalorder|heapstorm|all|hammer] ...
 
 No third-party dependencies — only the standard library plus the external CLI
 tools wasm-tools, node (>=22, for the V8 oracle), wasmtime and wasmedge.
@@ -22,7 +22,7 @@ Package layout:
   runner     run one case through every engine and classify
   mutate     re-point a type slot in a module (the subtyping sweep)
   wast       .wast parsing -> runnable (module, invoke, expected) cases
-  modes      replay / mutate / smith generation
+  modes      replay / mutate / smith / self-checking probe generation
   cli        argument parsing + the run loop
 """
 __version__ = "0.1.0"
