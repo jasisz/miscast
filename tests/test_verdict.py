@@ -92,6 +92,7 @@ def test_crash_regex():
        bool(_CRASH.search('Exception in thread "main" java.lang.ArrayIndexOutOfBoundsException: 1')), True)
     eq("a native segfault is a crash", bool(_CRASH.search("Segmentation fault: 11")), True)
     eq("a Rust panic is a crash", bool(_CRASH.search("thread 'main' panicked at src/lib.rs")), True)
+    eq("an ASan report is a crash", bool(_CRASH.search("ERROR: AddressSanitizer: heap-buffer-overflow")), True)
     eq("a clean Wasm trap is NOT a crash", bool(_CRASH.search("wasm trap: out of bounds memory access")), False)
 
 
@@ -175,6 +176,67 @@ def test_trapline():
     eq("trapline sweeps every family", len(fams) >= len(_FAMILIES), True)
     eq("trapline has mandated-TRAP probes", saw_trap, True)
     eq("trapline has baked-constant probes", saw_val, True)
+
+
+def test_intedge():
+    # the integer-boundary generator (trapline's non-trapping complement): every oracle a baked constant,
+    # never a TRAP. Pure structural checks; engine agreement re-confirmed by `python3 -m miscast.intedge`.
+    from miscast.intedge import intedge_gen, _FAMILIES
+    fams, rt32, rt64, unfoldable = set(), False, False, False
+    for s in range(88):
+        label, export, expected, wat, rtype = intedge_gen(s)
+        eq(f"intedge {s} exports f", export, "f")
+        eq(f"intedge {s} is a module", wat.strip().startswith("(module"), True)
+        eq(f"intedge {s} expected is a baked constant", expected.startswith("OK "), True)  # the law: never a TRAP
+        eq(f"intedge {s} rtype known", rtype in ("int", "int64"), True)
+        fams.add(label.split("-")[1].split("[")[0])
+        rt32 = rt32 or rtype == "int"
+        rt64 = rt64 or rtype == "int64"
+        unfoldable = unfoldable or "runtime[" in label
+    eq("intedge sweeps every family", len(fams) >= len(_FAMILIES), True)
+    eq("intedge covers i32 and i64 widths", rt32 and rt64, True)
+    eq("intedge forces the runtime path (no constant folding)", unfoldable, True)
+
+
+def test_memarg():
+    # the effective-address wrap generator: offset+addr must not wrap in 32 bits. Pure structural checks;
+    # engine agreement re-confirmed by `python3 -m miscast.memarg`.
+    from miscast.memarg import memarg_gen, _FAMILIES
+    fams, saw_wrap, saw_trap, saw_val = set(), False, False, False
+    for s in range(33):
+        label, export, expected, wat = memarg_gen(s)
+        eq(f"memarg {s} exports f", export, "f")
+        eq(f"memarg {s} is a module", wat.strip().startswith("(module"), True)
+        eq(f"memarg {s} expected is TRAP/OK", expected == "TRAP" or expected.startswith("OK "), True)
+        eq(f"memarg {s} plants a sentinel", "0x5A5A5A5A" in wat or "111111111" in wat or "store8" in wat
+           or "store16" in wat or "i64.store" in wat or "(i32.store offset=" in wat or "(i32.store (i32.const 0)" in wat, True)
+        fams.add(label.split("-")[1].split("[")[0])
+        saw_wrap = saw_wrap or "wrap" in label
+        saw_trap = saw_trap or expected == "TRAP"
+        saw_val = saw_val or expected.startswith("OK ")
+    eq("memarg sweeps every family", len(fams) >= len(_FAMILIES), True)
+    eq("memarg has the wrap smoking gun", saw_wrap, True)
+    eq("memarg has mandated-TRAP and baked-OK probes", saw_trap and saw_val, True)
+
+
+def test_bulkwrap():
+    # the bulk-extent wrap generator: dst+len / src+len / grow counts never wrap in 32 bits.
+    # Pure structural checks; engine agreement re-confirmed by `python3 -m miscast.bulkwrap`.
+    from miscast.bulkwrap import bulkwrap_gen, _FAMILIES
+    fams, saw_wrap, saw_ctrl, saw_trap, saw_val = set(), False, False, False, False
+    for s in range(25):
+        label, export, expected, wat = bulkwrap_gen(s)
+        eq(f"bulkwrap {s} exports f", export, "f")
+        eq(f"bulkwrap {s} is a module", wat.strip().startswith("(module"), True)
+        eq(f"bulkwrap {s} expected is TRAP/OK", expected == "TRAP" or expected.startswith("OK "), True)
+        fams.add(label.split("-")[1].split("[")[0])
+        saw_wrap = saw_wrap or "0xFF" in label
+        saw_ctrl = saw_ctrl or "ctrl" in label or (expected.startswith("OK ") and "0xFF" not in label)
+        saw_trap = saw_trap or expected == "TRAP"
+        saw_val = saw_val or expected.startswith("OK ")
+    eq("bulkwrap sweeps every family", len(fams) >= len(_FAMILIES), True)
+    eq("bulkwrap has wrap shapes and controls", saw_wrap and saw_ctrl, True)
+    eq("bulkwrap has mandated-TRAP and baked-OK probes", saw_trap and saw_val, True)
 
 
 def test_memory64():

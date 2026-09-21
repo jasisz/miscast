@@ -6,7 +6,7 @@
 //! invokes, and emits one JSON object per invoke with EXACT result bits (F32/F64 come back as their raw
 //! bit pattern) plus trap/error capture, with the wasmtime config chosen by flags.
 //!
-//!   mc-runner <module.wasm> --invoke FUNC [--arg TYPE:VAL ...] [--collector drc|null|copying] [--opt 0|1|2|s]
+//!   mc-runner <module.wasm> --invoke FUNC [--arg TYPE:VAL ...] [--collector drc|null|copying] [--opt 0|1|2|s] [--gc-stress]
 //!   mc-runner <module.wasm> --seq FUNC1 FUNC2 ...        (stateful: one instance, invoked in order)
 //!
 //! TYPE:VAL is i32:N / i64:N / f32:BITS / f64:BITS (floats passed as their integer bit pattern). Output:
@@ -15,9 +15,11 @@
 
 use std::env;
 use std::process::exit;
-use wasmtime::{Collector, Config, Engine, Instance, Module, OptLevel, Rooted, RootScope, Store, Val};
+use wasmtime::{
+    Collector, Config, Engine, Instance, Module, OptLevel, RootScope, Rooted, Store, Val,
+};
 
-fn make_config(collector: &str, opt: &str) -> Config {
+fn make_config(collector: &str, opt: &str, gc_stress: bool) -> Config {
     let mut config = Config::new();
     config.wasm_gc(true);
     config.wasm_function_references(true);
@@ -34,6 +36,11 @@ fn make_config(collector: &str, opt: &str) -> Config {
         "s" => OptLevel::SpeedAndSize,
         _ => OptLevel::Speed,
     });
+    if gc_stress {
+        // Small enough that stackmap's allocation storm crosses the collection threshold repeatedly, while
+        // still leaving room for its largest set of simultaneously-live objects.
+        config.gc_heap_initial_size(256 * 1024);
+    }
     config
 }
 
@@ -43,8 +50,13 @@ fn make_config(collector: &str, opt: &str) -> Config {
 /// `func` must return a (ref struct) whose field 0 is an i32 id. We root the first object, churn
 /// allocations + Store::gc(), then check the root still reads the
 /// same id and still ref-eqs a second root to it. A wrong id / failed ref_eq / abort under ASan = a bug.
-fn host_gc_stress(wasm: &str, func: &str, collector: &str, rounds: usize) -> anyhow::Result<String> {
-    let engine = Engine::new(&make_config(collector, "2"))?;
+fn host_gc_stress(
+    wasm: &str,
+    func: &str,
+    collector: &str,
+    rounds: usize,
+) -> anyhow::Result<String> {
+    let engine = Engine::new(&make_config(collector, "2", false))?;
     let module = Module::from_file(&engine, wasm)?;
     let mut store = Store::new(&engine, ());
     let instance = Instance::new(&mut store, &module, &[])?;
@@ -68,7 +80,11 @@ fn host_gc_stress(wasm: &str, func: &str, collector: &str, rounds: usize) -> any
             Val::I32(n) => n,
             _ => anyhow::bail!("struct field 0 is not i32"),
         };
-        (sref.to_owned_rooted(&mut scope)?, sref.to_owned_rooted(&mut scope)?, id0)
+        (
+            sref.to_owned_rooted(&mut scope)?,
+            sref.to_owned_rooted(&mut scope)?,
+            id0,
+        )
     };
 
     // churn: allocate garbage and force a collection each round (copying relocates the kept object)
@@ -122,11 +138,21 @@ fn val_str(v: &Val) -> String {
 }
 
 fn json_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " ").replace('\r', " ")
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', " ")
+        .replace('\r', " ")
 }
 
-fn run(wasm: &str, funcs: &[String], args: &[Val], collector: &str, opt: &str) -> anyhow::Result<Vec<Vec<Val>>> {
-    let engine = Engine::new(&make_config(collector, opt))?;
+fn run(
+    wasm: &str,
+    funcs: &[String],
+    args: &[Val],
+    collector: &str,
+    opt: &str,
+    gc_stress: bool,
+) -> anyhow::Result<Vec<Vec<Val>>> {
+    let engine = Engine::new(&make_config(collector, opt, gc_stress))?;
     let module = Module::from_file(&engine, wasm)?;
     let mut store = Store::new(&engine, ());
     let instance = Instance::new(&mut store, &module, &[])?; // miscast modules import nothing
@@ -151,6 +177,7 @@ fn main() {
     let mut collector = "drc".to_string();
     let mut opt = "2".to_string();
     let mut host_stress: Option<String> = None;
+    let mut gc_stress = false;
     let mut rounds = 200usize;
     let mut i = 1;
     while i < argv.len() {
@@ -169,6 +196,10 @@ fn main() {
             "--rounds" => {
                 rounds = next.and_then(|s| s.parse().ok()).unwrap_or(200);
                 i += 2;
+            }
+            "--gc-stress" => {
+                gc_stress = true;
+                i += 1;
             }
             "--seq" => {
                 i += 1;
@@ -224,12 +255,13 @@ fn main() {
         eprintln!("usage: mc-runner <module.wasm> --invoke FUNC | --host-gc-stress FUNC [--collector C] [--opt L]");
         exit(2);
     }
-    match run(&wasm, &funcs, &args, &collector, &opt) {
+    match run(&wasm, &funcs, &args, &collector, &opt, gc_stress) {
         Ok(all) => {
             let blocks: Vec<String> = all
                 .iter()
                 .map(|res| {
-                    let inner: Vec<String> = res.iter().map(|v| format!("\"{}\"", val_str(v))).collect();
+                    let inner: Vec<String> =
+                        res.iter().map(|v| format!("\"{}\"", val_str(v))).collect();
                     format!("[{}]", inner.join(","))
                 })
                 .collect();

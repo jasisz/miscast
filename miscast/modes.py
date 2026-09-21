@@ -10,9 +10,21 @@
            conduits (tag / call / global / br_on_cast / tail-call / field / table / extern), a routed exception
            nest, or an exnref carry — self-checking by construction; subsumes castbr / externconvert / eh / exnstack
   trapline trap-boundary generator: each trappable op swept across its {edge-1, edge, edge+1} with a baked TRAP/constant
+  intedge  integer boundary algebra (the non-trapping complement of trapline): shift/rotate count mod the width,
+           silent mul/add/sub wraparound, clz/ctz of 0 = width, extendN_s low-bits — baked constants, never a TRAP
   memory64 high (>= 2^32) linear-memory address must TRAP, not wrap to its low 32 bits (sandbox-escape probe)
+  bulkwrap bulk-extent wrap probe: memory/table copy/fill/init dst+len / src+len (and grow counts) never wrap
+  memarg   effective-address wrap probe: offset+addr must not wrap in 32 bits — a near-2^32 offset traps, never
+           aliases back into the memory (the memory64 escape class, on plain 32-bit memories)
+  atomicedge deterministic shared-memory atomics: RMW/cmpxchg old-value laws, packed truncation,
+             alignment/address boundaries, immediate wait/notify, and optimizer visibility
+  sharedgc experimental Shared-Everything GC atomics for V8: aliased structs/arrays, reference
+           cmpxchg/xchg across GC, packed fields, hot loops and exact traps
+  sharedrace deterministic multi-worker Shared-Everything contention: numeric fetch-add,
+             reference exchange multiset preservation, and reference CAS loops without ABA
   memcross multi-memory / bulk-memory cross-index probes with data init, copy/fill, grow and OOB traps
   arrayops bulk GC array ops (copy / fill / new_data / new_elem) swept for boundary, overlap, OOB and element variance
+  arraywrap GC-array bulk-op extent arithmetic must not wrap i32 offsets/lengths into an in-bounds access
   callref  typed function refs: call_ref / call_indirect / table bulk / br_on_cast[_fail] with baked call results or traps
   simdlane SIMD lane algebra: shuffle/swizzle, saturation, signedness, extmul/dot, memory lanes and bitmasks
   nanjet  f32/f64 NaN payload bit-preservation through runtime storage/control-flow paths
@@ -22,9 +34,15 @@
   packedops runtime packed-GC storage: i8/i16 struct/array set/fill/copy with sign/zero extension and truncation
   evalorder side-effecting operand order for bulk ops, calls, stores, aggregate constructors, EH payloads
   heapstorm stateful GC heap programs: many aliasing storage/copy/call/EH/extern operations plus a shadow checksum
+  stackmap compiler liveness / precise-GC stack maps: many live refs across allocation safepoints, operand-stack
+           call arguments, multi-value returns, loop phis, mixed heap representations, and V8 tier-up
+  barrier  remembered-set / write-barrier probes: age a container, install fresh references through scalar
+           and bulk stores, remove direct roots, collect, then read a baked checksum
+  optstate hot optimizer-state probes: mutable GC loads around aliasing stores, bulk copies, calls, casts,
+           and extern round-trips, with a Python-modeled checksum
   castalgebra subtype / cast correctness: ref.test / ref.cast swept across the type lattice + structural-twin canonicalization + self-consistency
   constinit GC const-expr init (global / elem / data: struct.new / array.new / ref.i31, extended-const) evaluated to a baked value
-  hammer   broad deterministic sweep: all + trapline + memory64 + memcross + arrayops + callref + simdlane + nanjet + flowmerge + refalias + mutalias + packedops + evalorder + heapstorm + invalid
+  hammer   broad deterministic sweep: all + trapline + intedge + memory64 + memarg + bulkwrap + atomicedge + memcross + arrayops + arraywrap + callref + simdlane + nanjet + flowmerge + refalias + mutalias + packedops + evalorder + heapstorm + stackmap + barrier + optstate + invalid
   invalid  a battery of spec-invalid GC modules: does the SUT reject them? (validation differential)
 """
 import os
@@ -35,9 +53,16 @@ from .morphism import gen as morphism_gen
 from .recgroup import gen as recgroup_gen
 from .compose import compose_gen
 from .trapline import trapline_gen
+from .intedge import intedge_gen
 from .memory64 import memory64_gen
+from .memarg import memarg_gen
+from .bulkwrap import bulkwrap_gen
+from .atomicedge import atomicedge_gen
+from .sharedgc import sharedgc_gen
+from .sharedrace import sharedrace_gen
 from .memcross import memcross_gen
 from .arrayops import arrayops_gen
+from .arraywrap import arraywrap_gen
 from .callref import callref_gen
 from .simdlane import simdlane_gen
 from .nanjet import nanjet_gen
@@ -47,6 +72,9 @@ from .mutalias import mutalias_gen
 from .packedops import packedops_gen
 from .evalorder import evalorder_gen, _FAMILIES as EVALORDER_FAMILIES
 from .heapstorm import heapstorm_gen
+from .stackmap import stackmap_gen
+from .barrier import barrier_gen
+from .optstate import optstate_gen
 from .castalgebra import castalgebra_gen
 from .constinit import constinit_gen
 from .mutate import mutate_module
@@ -138,6 +166,20 @@ def gen_trapline(_cases, n):
     return out, []
 
 
+def gen_intedge(_cases, n):
+    """Integer boundary algebra probes (see intedge.py): the NON-trapping complement of `trapline` —
+    every oracle is a baked constant from a Python bit-model, never a TRAP. Shift / rotate counts are
+    taken modulo the width (`i32.shl 1 32` is 1), mul / add / sub wrap silently (`INT_MIN * -1 == INT_MIN`
+    exactly where `INT_MIN / -1` traps), clz / ctz of 0 are the width, `extendN_s` reads only the low N
+    bits — half of it forced through mutable globals + a memory round-trip so the runtime path answers,
+    not the constant folder."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat, rtype = intedge_gen(i)
+        out.append((f"intedge{i}|{label}", wat, export, [], expected, rtype))
+    return out, []
+
+
 def gen_memory64(_cases, n):
     """memory64 address-truncation probes (see memory64.py): a high (>= 2^32) linear-memory address must TRAP,
     not wrap to its low 32 bits. Each plants a sentinel low and accesses a high address; an engine that returns
@@ -146,6 +188,60 @@ def gen_memory64(_cases, n):
     for i in range(n):
         label, export, expected, wat = memory64_gen(i)
         out.append((f"memory64{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
+def gen_memarg(_cases, n):
+    """Effective-address wrap probes (see memarg.py): `ea = offset + addr` is computed without wrap, so a
+    near-2^32 offset must push the access OUT of bounds — never alias back to the wrapped byte inside the
+    memory. Sentinels are planted exactly where a u32 wrap would land, so a wrapping engine returns a value
+    (or writes!) where the law mandates TRAP — the memory64 sandbox-escape class, but on plain 32-bit
+    memories every engine runs. The `edge` / `widths` / `bigoffset` families pin the exact boundary."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = memarg_gen(i)
+        out.append((f"memarg{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
+def gen_bulkwrap(_cases, n):
+    """Bulk-extent wrap probes (see bulkwrap.py): `dst + len`, `src + len` — and grow's `current + count` —
+    are computed exactly, never in a u32. `memory.fill` at dst=0xFFFFFF00 with len=0x200 must TRAP; an
+    engine forming the sum in u32 wraps it to 0x100, passes its own check, and fills 512 bytes at a wild
+    address — a heap overflow. fill / copy / init (passive-segment extents, the exact segment end, the
+    dropped-segment zero-length case) / table.fill / copy / init / grow argument wrap, each paired with
+    in-bounds and plain-OOB controls so a divergence isolates the wrap."""
+    out = []
+    for i in range(min(n, 25)):
+        label, export, expected, wat = bulkwrap_gen(i)
+        out.append((f"bulkwrap{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
+def gen_atomicedge(_cases, n):
+    """Single-agent shared-memory atomics with a baked model: no scheduler or timing oracle."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = atomicedge_gen(i)
+        out.append((f"atomicedge{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
+def gen_sharedgc(_cases, n):
+    """Experimental shared GC aggregates with self-checking values/traps (currently d8 --wasm-shared)."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = sharedgc_gen(i)
+        out.append((f"sharedgc{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
+def gen_sharedrace(_cases, n):
+    """Real d8 Workers contend on one shared GC object; every schedule satisfies the same invariant."""
+    out = []
+    for i in range(min(n, 80)):
+        label, export, expected, wat = sharedrace_gen(i)
+        out.append((f"sharedrace{i}|{label}", wat, export, [], expected, "int"))
     return out, []
 
 
@@ -167,6 +263,16 @@ def gen_arrayops(_cases, n):
     for i in range(n):
         label, export, expected, wat = arrayops_gen(i)
         out.append((f"arrayops{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
+def gen_arraywrap(_cases, n):
+    """GC-array extent-wrap probes (see arraywrap.py): scalar and segment bulk operations must bounds-check
+    full unsigned extents without i32 addition or element-size multiplication wrap."""
+    out = []
+    for i in range(min(n, 42)):
+        label, export, expected, wat = arraywrap_gen(i)
+        out.append((f"arraywrap{i}|{label}", wat, export, [], expected, "int"))
     return out, []
 
 
@@ -267,6 +373,37 @@ def gen_heapstorm(_cases, n):
     return out, []
 
 
+def gen_stackmap(_cases, n):
+    """Precise-GC stack-map stress (see stackmap.py): uniquely tagged objects stay live only in locals or
+    operand-stack SSA values across forced allocation safepoints.  The backend enables Wasmtime's moving
+    collector with collection-at-every-allocation and V8's synchronous early tier-up plus compacting GC."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = stackmap_gen(i)
+        out.append((f"stackmap{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
+def gen_barrier(_cases, n):
+    """Remembered-set/write-barrier stress (see barrier.py): old containers receive fresh references via
+    struct, array, table, global, and bulk stores; direct roots are cleared before forced collection."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = barrier_gen(i)
+        out.append((f"barrier{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
+def gen_optstate(_cases, n):
+    """Hot Wasm-GC optimizer probes (see optstate.py): loads surround operations whose alias or side effect
+    must invalidate compiler state; a Python model supplies the final checksum."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = optstate_gen(i)
+        out.append((f"optstate{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
 def gen_castalgebra(_cases, n):
     """Subtype / cast correctness probes (see castalgebra.py): ref.test / ref.cast swept across a fixed
     type lattice (own / super / strict-subtype / sibling / unrelated), structurally-identical twin types
@@ -312,18 +449,23 @@ def gen_all(cases, n):
 
 def gen_hammer(cases, n):
     """A broad deterministic engine sweep. `all` focuses on GC soundness/value-preservation; this adds the
-    mature-runtime stress surfaces that are otherwise separate: trap boundaries, memory64 high-address
+    mature-runtime stress surfaces that are otherwise separate: trap boundaries, integer boundary algebra,
+    memory64 high-address
     aliasing, multi-memory cross-indexing, bulk GC array operations, typed function-reference calls, SIMD lane
     algebra, NaN payload preservation, control-flow merge typing, reference identity preservation, mutable-alias write visibility,
     packed-GC storage, side-effecting operand order, and stateful heap storms. The invalid validation battery
     is added by the CLI."""
     out, untested = gen_all(cases, n)
-    for gen, count in ((gen_trapline, min(n, 48)), (gen_memory64, min(n, 36)), (gen_memcross, min(n, 48)),
-                       (gen_arrayops, min(n, 44)), (gen_callref, min(n, 36)), (gen_simdlane, min(n, 64)),
+    for gen, count in ((gen_trapline, min(n, 48)), (gen_intedge, min(n, 88)), (gen_memory64, min(n, 36)),
+                       (gen_memarg, min(n, 33)), (gen_bulkwrap, min(n, 25)), (gen_atomicedge, min(n, 56)),
+                       (gen_memcross, min(n, 48)),
+                       (gen_arrayops, min(n, 44)), (gen_arraywrap, min(n, 42)),
+                       (gen_callref, min(n, 36)), (gen_simdlane, min(n, 64)),
                        (gen_nanjet, min(n, 72)),
                        (gen_flowmerge, min(n, 40)), (gen_refalias, min(n, 40)), (gen_mutalias, min(n, 40)),
                        (gen_packedops, min(n, 48)), (gen_evalorder, min(n, 48)),
-                       (gen_heapstorm, min(n, 48))):
+                       (gen_heapstorm, min(n, 48)), (gen_stackmap, min(n, 25)),
+                       (gen_barrier, min(n, 30)), (gen_optstate, min(n, 30))):
         w, u = gen(cases, count)
         out += w
         untested += u
@@ -333,7 +475,13 @@ def gen_hammer(cases, n):
 MODES = {"replay": gen_replay, "mutate": gen_mutate, "smith": gen_smith, "morphism": gen_morphism,
          "recgroup": gen_recgroup, "compose": gen_compose, "trapline": gen_trapline, "memory64": gen_memory64,
          "memcross": gen_memcross,
+         "memarg": gen_memarg, "bulkwrap": gen_bulkwrap,
+         "atomicedge": gen_atomicedge,
+         "sharedgc": gen_sharedgc,
+         "sharedrace": gen_sharedrace,
          "arrayops": gen_arrayops, "callref": gen_callref, "simdlane": gen_simdlane,
+         "arraywrap": gen_arraywrap,
+         "intedge": gen_intedge,
          "nanjet": gen_nanjet,
          "flowmerge": gen_flowmerge,
          "refalias": gen_refalias,
@@ -341,5 +489,8 @@ MODES = {"replay": gen_replay, "mutate": gen_mutate, "smith": gen_smith, "morphi
          "packedops": gen_packedops,
          "evalorder": gen_evalorder,
          "heapstorm": gen_heapstorm,
+         "stackmap": gen_stackmap,
+         "barrier": gen_barrier,
+         "optstate": gen_optstate,
          "castalgebra": gen_castalgebra,
          "constinit": gen_constinit, "all": gen_all, "hammer": gen_hammer}

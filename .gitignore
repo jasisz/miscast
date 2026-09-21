@@ -5,3 +5,4 @@ __pycache__/
 .idea/
 .DS_Store
 /FINDINGS.md
+tools/wasmtime_race/target/

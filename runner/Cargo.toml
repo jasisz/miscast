@@ -9,7 +9,7 @@ name = "mc-runner"
 path = "src/main.rs"
 
 [dependencies]
-wasmtime = "46"
+wasmtime = "48"
 anyhow = "1"
 
 [profile.release]

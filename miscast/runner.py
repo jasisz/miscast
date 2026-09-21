@@ -5,8 +5,9 @@ import os
 from .engines import ENGINES, validate_module, conformance_file, generated_wast_file, first_export
 from .verdict import classify, classify_validation, classify_conformance, classify_generated_script
 
-SELFCHECK_PREFIXES = ("morphism", "recgroup", "compose", "trapline", "memory64",
-                      "memcross", "arrayops", "callref", "simdlane", "nanjet", "flowmerge", "refalias",
+SELFCHECK_PREFIXES = ("morphism", "recgroup", "compose", "trapline", "intedge", "memory64", "memarg",
+                      "bulkwrap", "atomicedge", "sharedgc", "sharedrace", "stackmap", "barrier", "optstate",
+                      "memcross", "arrayops", "arraywrap", "callref", "simdlane", "nanjet", "flowmerge", "refalias",
                       "mutalias", "packedops", "evalorder", "heapstorm", "castalgebra", "constinit")
 
 

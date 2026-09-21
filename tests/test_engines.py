@@ -58,6 +58,23 @@ def test_wasmedge_validate_accept_reject():
         "rejected module", engines._wasmedge_validate("m.wasm"), "REJECT"))
 
 
+def test_wamr_run_ok_trap_and_crash():
+    with_fake_run(cp(out="0xffffffff:i32\n"), lambda fake: (
+        eq("hex result", engines.be_wamr("m.wat", "m.wasm", "f", []), "OK 0xffffffff"),
+        eq("heap extension disabled", "--heap-size=0" in fake.cmds[0], True)))
+    with_fake_run(cp(1, err="Exception: out of bounds array access"), lambda _f: eq(
+        "trap", engines.be_wamr("m.wat", "m.wasm", "f", []), "TRAP"))
+    with_fake_run(cp(1, err="ERROR: AddressSanitizer: heap-buffer-overflow"), lambda _f: eq(
+        "sanitizer", engines.be_wamr("m.wat", "m.wasm", "f", []), "CRASH"))
+
+
+def test_wamr_validate_accept_reject():
+    with_fake_run(cp(1, err="Exception: lookup function __miscast_validate_only__ failed"), lambda _f: eq(
+        "loaded module", engines._wamr_validate("m.wasm"), "ACCEPT"))
+    with_fake_run(cp(255, err="WASM module load failed: type mismatch"), lambda _f: eq(
+        "rejected module", engines._wamr_validate("m.wasm"), "REJECT"))
+
+
 if __name__ == "__main__":
     tests = [f for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     for t in tests:

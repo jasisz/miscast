@@ -8,6 +8,55 @@ The short index lives in the [README](../README.md#found-in-the-wild); this is t
 
 ---
 
+## WAMR
+
+Tested on current `main` at `b70d708d46be750bfcf008218b42c7b98c49368a` with both the classic and fast
+interpreters, each built with ASan+UBSan and GC enabled. The modules validate with `wasm-tools`; Wasmtime
+supplies the agreeing execution oracle.
+
+### `array.fill` / `array.copy` skip bounds checks when the length is zero — [WAMR#5113](https://github.com/wasm-micro-runtime/wasm-micro-runtime/issues/5113)
+
+The GC instructions still have to validate their start offsets when the requested length is zero: an access
+is in bounds only when `offset + length <= array length`. WAMR wraps both the bounds check and the operation
+in `if (len > 0)`, so an offset beyond the end is silently accepted whenever `len == 0`.
+
+```wat
+(module (type $a (array (mut i32)))
+  (func (export "f") (result i32) (local $a (ref $a))
+    (local.set $a (array.new_fixed $a 4
+      (i32.const 10) (i32.const 11) (i32.const 12) (i32.const 13)))
+    (array.fill $a (local.get $a) (i32.const 5) (i32.const 77) (i32.const 0))
+    (array.get $a (local.get $a) (i32.const 3))))
+```
+
+WAMR returns `13`; Wasmtime traps with `out of bounds array access`. The same defect accepts
+`array.fill` at `0xffffffff` and `array.copy` with source and destination offsets `0xffffffff`, all with
+length zero. Exact-end controls (`offset == 4`, length zero) run correctly. Found by `arraywrap`; the shared
+cause is visible in both interpreter dispatch loops, including the
+[`if (len > 0)` around `array.fill`](https://github.com/bytecodealliance/wasm-micro-runtime/blob/b70d708d46be750bfcf008218b42c7b98c49368a/core/iwasm/interpreter/wasm_interp_fast.c#L2563-L2573)
+and the equivalent guard around `array.copy`.
+
+### `array.new_data` reads a data segment after `data.drop` — [WAMR#5114](https://github.com/wasm-micro-runtime/wasm-micro-runtime/issues/5114)
+
+After `data.drop`, the segment behaves as a zero-length segment. A request for one element at offset zero
+must therefore trap, but WAMR reads the original retained bytes and constructs the array:
+
+```wat
+(module (type $a (array (mut i32)))
+  (data $d "\01\02\03\04")
+  (func (export "f") (result i32)
+    (data.drop $d)
+    (array.len (array.new_data $a $d (i32.const 0) (i32.const 1)))))
+```
+
+WAMR returns `1`; Wasmtime traps. Both interpreter implementations consult the segment's original
+`data_length` and bytes but never the instance's dropped-segment bitmap (the fast path starts
+[`WASM_OP_ARRAY_NEW_DATA` here](https://github.com/bytecodealliance/wasm-micro-runtime/blob/b70d708d46be750bfcf008218b42c7b98c49368a/core/iwasm/interpreter/wasm_interp_fast.c#L2351-L2415)).
+Found by `arrayops`. This is a Wasm semantic soundness bug, not an ASan-detected host use-after-free: WAMR
+retains the segment allocation and incorrectly keeps it semantically accessible.
+
+---
+
 ## WasmEdge
 
 ### Validator accepts a forward supertype reference — [WasmEdge#5061](https://github.com/WasmEdge/WasmEdge/issues/5061)
@@ -157,6 +206,29 @@ returns the aliased sentinel `1431655765`. Controls: a store at `2^32` then a lo
 stored value (a **write** escape); a value at offset `8` is read back via address `2^32 + 8` (the address is
 `addr & 0xffffffff`); an address `131072` (`< 2^32`, still OOB) traps correctly — so the 32-bit bounds check
 works and only the **high 32 bits are dropped**. Found by the `memory64` mode.
+
+### Effective address `offset + addr` wraps in 32 bits — an OOB access aliases the bottom of a 32-bit memory — [wasmz#12](https://github.com/Ray-D-Song/wasmz/issues/12) *(fixed on main before the report — see the postscript)*
+
+The memarg effective address is folded in 32 bits, so an offset near 2³² wraps the access back to the bottom
+of the memory instead of trapping — on **plain 32-bit memories**, no memory64 needed:
+
+```wat
+(module (memory 1)
+  (func (export "f") (result i32)
+    (i32.store (i32.const 0) (i32.const 0x5A5A5A5A))   ;; sentinel at 0
+    (i32.load offset=0xFFFFFFFF (i32.const 1))))        ;; ea = 0x100000000 — must trap
+```
+
+wasmz returns the sentinel `1515870810` (`0x5A5A5A5A`) — every oracle traps. The
+**write** variant is worse: an `i32.store offset=0xFFFFFFFF (i32.const 1)` goes through and a read-back of
+offset 0 returns the stored value, so an out-of-bounds store *lands* at `ea mod 2³²`. Five wrap shapes
+(`0xFFFFFFFF+1`, `0xFFFFFFF0+0x10`, `0x80000000+0x80000001`, `0x20+0xFFFFFF00`, `0xFFFFFFF8+0xC`) all
+execute; 21 control programs (plain last-byte boundaries, per-width 8/16/32/64 last-slot sweeps,
+large-but-legal offsets in a 2-page memory, addr-only OOB) all behave exactly right — so the bounds check
+itself is precise and only the `offset + addr` addition wraps. The same truncation disease as the fixed
+wasmz#10 (there the memory64 address, here the memarg offset on ordinary memories): the spec computes `ea`
+exactly — it can need 33 bits — and mandates the trap. Found by the `memarg` mode; wasmtime, V8, WasmEdge,
+mcr, Talos and Wizard return the exact expected verdicts on all 33.
 
 ### Spec-invalid modules are accepted and run — [wasmz#8](https://github.com/Ray-D-Song/wasmz/issues/8)
 

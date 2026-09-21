@@ -10,14 +10,20 @@ import shlex
 import shutil
 import tempfile
 
-from .config import NODE, ORACLE, WORK, SPEC_WASM, WASMEDGE, WASMEDGE_FLAGS
+from .config import (D8, D8_ORACLE, D8_WORKER_ORACLE, IWASM, NODE, ORACLE,
+                     SPEC_WASM, WAMR_FLAGS, WASMEDGE, WASMEDGE_FLAGS, WORK)
 from .toolchain import _run
 
 _NUM = re.compile(r"-?(?:0x[0-9a-fA-F]+|\d+\.\d+(?:[eE][+-]?\d+)?|\d+(?:[eE][+-]?\d+)?|inf|nan)", re.I)
+_WAMR_RESULT = re.compile(
+    r"^\s*(-?(?:0x[0-9a-fA-F]+|\d+\.\d+(?:[eE][+-]?\d+)?|\d+(?:[eE][+-]?\d+)?|inf|nan))"
+    r":(?:i32|i64|f32|f64)\s*$", re.I | re.M)
 #   an integer (incl. 0x hex) or float (incl. scientific) value at the start of a custom SUT's output
 # A HOST crash — the engine itself fell over (a native segfault / Rust panic / uncaught host exception),
 # not a defined Wasm `trap`. This is a distinct, stronger signal than UNSUP: the SUT broke on the input.
-_CRASH = re.compile(r"segmentation|segfault|core dumped|\bpanicked?\b|unable to dump|"
+_CRASH = re.compile(r"addresssanitizer|undefinedbehaviorsanitizer|threadsanitizer|runtime error:|"
+                    r"segmentation|segfault|core dumped|fatal error|illegal instruction|"
+                    r"sig(?:abrt|segv|ill|bus)|\bpanicked?\b|unable to dump|"
                     r"exception in thread|out ?of ?memory|outofmemoryerror|"
                     r"arrayindexoutofbounds|nullpointerexception|stackoverflowerror|illegalstate", re.I)
 # A clean Wasm TRAP, across engines' differing wording — checked AFTER _CRASH so a host crash is never a trap.
@@ -27,10 +33,46 @@ _TRAP = re.compile(r"\btrap\b|unreachable|out of bounds|null (reference|derefere
                    r"indirect call type mismatch|cast failure|divide by zero|integer (overflow|divide)|"
                    r"u?n(initialized|defined) element|exception:|execution failed", re.I)
 
+_GC_STRESS_MARKERS = ("miscast-stackmap-stress", "miscast-barrier-stress", "miscast-optstate-stress",
+                      "miscast-sharedgc-stress", "miscast-sharedrace-stress")
+_SHARED_GC_MARKER = "miscast-sharedgc-stress"
+_SHARED_RACE_MARKER = "miscast-sharedrace-stress"
+
+
+def _is_gc_stress(wat):
+    """Focused collector probes request deterministic GC/tiering pressure from capable backends."""
+    try:
+        with open(wat) as f:
+            head = f.read(256)
+            return any(marker in head for marker in _GC_STRESS_MARKERS)
+    except OSError:
+        return False
+
+
+def _is_shared_gc(wat):
+    try:
+        with open(wat) as f:
+            return _SHARED_GC_MARKER in f.read(256)
+    except OSError:
+        return False
+
+
+def _is_shared_race(wat):
+    try:
+        with open(wat) as f:
+            return _SHARED_RACE_MARKER in f.read(256)
+    except OSError:
+        return False
+
 
 def be_v8(wat, wasm, export, args):
     av = [v + ("n" if t == "i64" else "") for t, v in args]
-    o = _run([NODE, ORACLE, wasm, export] + av).stdout
+    flags = (["--wasm-sync-tier-up", "--wasm-tiering-budget=100", "--gc-interval=16",
+              "--stress-scavenge=50", "--stress-compaction"] if _is_gc_stress(wat) else [])
+    r = _run([NODE] + flags + [ORACLE, wasm, export] + av)
+    o, both = r.stdout, r.stdout + r.stderr
+    if _CRASH.search(both) or r.returncode < 0:
+        return "CRASH"
     if "=> OK" in o:
         return "OK " + o.split("=> OK ")[1].strip()      # raw value; classify normalizes per type
     if "TRAP" in o:
@@ -42,9 +84,37 @@ def be_v8(wat, wasm, export, args):
     return "ERR"
 
 
+def be_d8(wat, wasm, export, args):
+    """Standalone V8/d8 backend, enabled explicitly with ``D8=/path/to/d8``."""
+    av = [v + ("n" if t == "i64" else "") for t, v in args]
+    flags = (["--wasm-shared"] if _is_shared_gc(wat) or _is_shared_race(wat) else [])
+    flags += (["--wasm-sync-tier-up", "--wasm-tiering-budget=100", "--gc-interval=16",
+               "--stress-scavenge=50", "--stress-compaction"] if _is_gc_stress(wat) else [])
+    oracle = D8_WORKER_ORACLE if _is_shared_race(wat) else D8_ORACLE
+    r = _run([D8] + flags + [oracle, "--", wasm, export] + av, timeout=60 if _is_shared_race(wat) else None)
+    out, both = r.stdout, r.stdout + r.stderr
+    if _CRASH.search(both) or r.returncode < 0:
+        return "CRASH"
+    if "=> OK" in out:
+        return "OK " + out.split("=> OK ")[1].strip()
+    if "TRAP" in out:
+        return "TRAP"
+    if "NOEXPORT" in out:
+        return "NOEXPORT"
+    if "INSTANTIATE-FAIL" in out:
+        return "UNSUP"
+    return "ERR"
+
+
 def be_wasmtime(wat, wasm, export, args):
-    r = _run(["wasmtime", "run", "--invoke", export, "-W", "function-references=y,gc=y,exceptions=y,tail-call=y", wasm] + [v for _, v in args])
+    stress = (["-C", "collector=copying", "-O", "gc-zeal-alloc-counter=1"]
+              if _is_gc_stress(wat) else [])
+    r = _run(["wasmtime", "run", "--invoke", export, "-W",
+              "function-references=y,gc=y,exceptions=y,tail-call=y,threads=y,shared-memory=y"] + stress
+             + [wasm] + [v for _, v in args])
     out, both = r.stdout.strip(), (r.stdout + r.stderr).lower()
+    if _CRASH.search(both) or r.returncode < 0:
+        return "CRASH"
     if "trap" in both:
         return "TRAP"
     if "failed to find" in both or "no func" in both or "no export" in both:
@@ -74,6 +144,27 @@ def be_wasmedge(wat, wasm, export, args):
     return "OK " + nums[-1] if nums else "OK _"
 
 
+def be_wamr(wat, wasm, export, args):
+    """WAMR/iwasm interpreter backend. ``--heap-size=0`` is part of the default
+    flags because iwasm's embedding heap can otherwise extend visible linear memory."""
+    r = _run([IWASM] + WAMR_FLAGS + ["--function", export, wasm] + [v for _, v in args])
+    out, both = r.stdout.strip(), r.stdout + r.stderr
+    low = both.lower()
+    if _CRASH.search(both) or r.returncode < 0:
+        return "CRASH"
+    if "lookup function" in low and "failed" in low:
+        return "NOEXPORT"
+    if _TRAP.search(both):
+        return "TRAP"
+    if r.returncode != 0:
+        return "UNSUP"
+    typed = _WAMR_RESULT.findall(out)
+    if typed:
+        return "OK " + typed[-1]
+    nums = _NUM.findall(out)
+    return "OK " + nums[-1] if nums else "OK _"
+
+
 MC_RUNNER = os.environ.get("MC_RUNNER") or os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runner", "target", "release", "mc-runner")
 
@@ -86,7 +177,10 @@ def be_mc_runner(wat, wasm, export, args):
     for t, v in args:
         if t in ("i32", "i64"):                          # CLI can't pass float/ref args (parse_invoke skips them)
             av += ["--arg", f"{t}:{v}"]
-    r = _run([MC_RUNNER, wasm, "--invoke", export] + av)
+    stress = ["--collector", "copying", "--gc-stress"] if _is_gc_stress(wat) else []
+    r = _run([MC_RUNNER, wasm, "--invoke", export] + stress + av)
+    if _CRASH.search(r.stdout + r.stderr) or r.returncode < 0:
+        return "CRASH"
     line = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
     try:
         j = json.loads(line)
@@ -164,14 +258,29 @@ def repro_command(engine, wat_path, wasm_path, export, args, wast_path=None):
     a = [v for _, v in args]
     if engine == "v8":
         av = [v + ("n" if t == "i64" else "") for t, v in args]
-        return " ".join([NODE or "node", ORACLE, wasm_path, export] + av)
+        flags = (["--wasm-sync-tier-up", "--wasm-tiering-budget=100", "--gc-interval=16",
+                  "--stress-scavenge=50", "--stress-compaction"] if _is_gc_stress(wat_path) else [])
+        return " ".join([NODE or "node"] + flags + [ORACLE, wasm_path, export] + av)
+    if engine == "d8":
+        av = [v + ("n" if t == "i64" else "") for t, v in args]
+        flags = (["--wasm-shared"] if _is_shared_gc(wat_path) or _is_shared_race(wat_path) else [])
+        flags += (["--wasm-sync-tier-up", "--wasm-tiering-budget=100", "--gc-interval=16",
+                   "--stress-scavenge=50", "--stress-compaction"] if _is_gc_stress(wat_path) else [])
+        oracle = D8_WORKER_ORACLE if _is_shared_race(wat_path) else D8_ORACLE
+        return " ".join([D8 or "d8"] + flags + [oracle, "--", wasm_path, export] + av)
     if engine == "wasmtime":
+        stress = (["-C", "collector=copying", "-O", "gc-zeal-alloc-counter=1"]
+                  if _is_gc_stress(wat_path) else [])
         return " ".join(["wasmtime", "run", "--invoke", export,
-                         "-W", "function-references=y,gc=y,exceptions=y,tail-call=y", wasm_path] + a)
+                         "-W", "function-references=y,gc=y,exceptions=y,tail-call=y,threads=y,shared-memory=y"] + stress
+                        + [wasm_path] + a)
     if engine == "wasmedge":
         return " ".join([WASMEDGE, "run"] + _wasmedge_run_flags() + ["--reactor", wasm_path, export] + a)
+    if engine == "wamr":
+        return " ".join([IWASM or "iwasm"] + WAMR_FLAGS + ["--function", export, wasm_path] + a)
     if engine == "mcr":
-        return " ".join([MC_RUNNER, wasm_path, "--invoke", export]
+        stress = ["--collector", "copying", "--gc-stress"] if _is_gc_stress(wat_path) else []
+        return " ".join([MC_RUNNER, wasm_path, "--invoke", export] + stress
                         + sum([["--arg", f"{t}:{v}"] for t, v in args if t in ("i32", "i64")], []))
     if engine == "spec":
         return f"{SPEC_WASM or '$SPEC_WASM'} {wast_path or '<module+invoke>.wast'}"
@@ -217,6 +326,17 @@ def _v8_validate(wsm):
     return "UNSUP"
 
 
+def _d8_validate(wsm):
+    if wsm is None:
+        return "UNSUP"
+    out = _run([D8, D8_ORACLE, "--", wsm, "__validate__"]).stdout
+    if "=> VALID" in out:
+        return "ACCEPT"
+    if "=> INVALID" in out:
+        return "REJECT"
+    return "UNSUP"
+
+
 def _wasmedge_validate(wsm):
     if wsm is None:
         return "UNSUP"
@@ -237,6 +357,23 @@ def _wasmedge_validate(wsm):
             os.unlink(out_path)
         except OSError:
             pass
+
+
+def _wamr_validate(wsm):
+    """Use a deliberately absent export as iwasm's validation-only sentinel.
+    Reaching lookup proves the module loaded; loader/type errors prove rejection."""
+    if wsm is None:
+        return "UNSUP"
+    r = _run([IWASM] + WAMR_FLAGS + ["--function", "__miscast_validate_only__", wsm])
+    both = r.stdout + r.stderr
+    low = both.lower()
+    if _CRASH.search(both):
+        return "ACCEPT"
+    if "lookup function __miscast_validate_only__ failed" in low:
+        return "ACCEPT"
+    if "module load failed" in low or _VALERR.search(both):
+        return "REJECT"
+    return "ACCEPT" if r.returncode == 0 else "UNSUP"
 
 
 def _custom_validate(module_wat, wp, wsm):
@@ -274,8 +411,12 @@ def validate_module(module_wat, engines):
                                           wsm, "-o", os.devnull]).returncode == 0 else "REJECT"))
         elif en == "wasmedge":
             out[en] = _wasmedge_validate(wsm)
+        elif en == "wamr" and IWASM:
+            out[en] = _wamr_validate(wsm)
         elif en == "v8" and NODE:
             out[en] = _v8_validate(wsm)
+        elif en == "d8" and D8:
+            out[en] = _d8_validate(wsm)
         elif en == "custom":
             out[en] = _custom_validate(module_wat, wp, wsm)
     return out, wp, wsm
@@ -337,10 +478,14 @@ def detect_engines():
     eng = {}
     if NODE and os.path.exists(ORACLE):
         eng["v8"] = be_v8
+    if D8 and os.path.exists(D8) and os.path.exists(D8_ORACLE):
+        eng["d8"] = be_d8
     if shutil.which("wasmtime"):
         eng["wasmtime"] = be_wasmtime
     if shutil.which(WASMEDGE):
         eng["wasmedge"] = be_wasmedge
+    if IWASM and os.path.exists(IWASM):
+        eng["wamr"] = be_wamr
     if os.path.exists(MC_RUNNER):                        # the wasmtime-crate embedder (exact bits, always gc-capable)
         eng["mcr"] = be_mc_runner
     if SPEC_WASM and os.path.exists(SPEC_WASM):          # the WebAssembly reference interpreter
@@ -353,4 +498,4 @@ def detect_engines():
 
 
 ENGINES = detect_engines()
-ENGINE_ORDER = ["v8", "wasmtime", "wasmedge", "mcr", "spec", "custom"]
+ENGINE_ORDER = ["d8", "v8", "wasmtime", "wasmedge", "wamr", "mcr", "spec", "custom"]
