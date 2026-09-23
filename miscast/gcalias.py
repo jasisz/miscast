@@ -63,6 +63,10 @@ HELPERS = """  (func $hsetA0 (param $o (ref $A)) (param $v i32) (struct.set $A 0
     (array.copy $V $V (local.get $d) (i32.const 1) (local.get $s) (i32.const 0) (i32.const 3)))
 """
 
+# only in churn mode: a call that allocates (and so may collect / grow / move the GC heap) inside the callee
+CHURN_HELPER = """  (func $hchurn (param $n i32) (result i32) (array.len (array.new $V (local.get $n) (local.get $n))))
+"""
+
 
 def _wrap32(x):
     return x & 0xFFFFFFFF
@@ -79,8 +83,9 @@ def _store(width, v):
 
 
 class _Gen:
-    def __init__(self, rng):
+    def __init__(self, rng, churn=False):
         self.r = rng
+        self.churn = churn
         self.dyn = {}  # local -> dyn type at generation time (top level exact)
 
     # --- operand choices -------------------------------------------------
@@ -98,7 +103,11 @@ class _Gen:
                  "call", "mixget"]
         if top:
             kinds += ["repoint", "repoint", "hstore", "hload", "rstore", "rload", "new", "if", "loop"]
+        if self.churn:
+            kinds += ["churn"] * 3
         k = r.choice(kinds)
+        if k == "churn":  # a large live allocation between accesses: forces collections, heap growth, moves
+            return ("churn", r.choice(["local", "call"]), r.choice([16, 1000, 20000, 100000, 300000]))
         if k in ("sget", "sset", "mixget"):
             fam, loc = self.pick_struct_local()
             dyn = self.dyn[loc]
@@ -284,6 +293,11 @@ def emit(op):
         return (f"(local.set $i (i32.const {n}))\n    (loop $l\n        {b}\n"
                 f"        (local.set $i (i32.sub (local.get $i) (i32.const 1)))\n"
                 f"        (br_if $l (local.get $i)))")
+    if k == "churn":
+        _, how, n = op
+        if how == "call":
+            return f"(drop (call $hchurn (i32.const {n})))"
+        return f"(local.set $ballast (array.new $V (i32.wrap_i64 {_ACC}) (i32.const {n})))"
     raise AssertionError(k)
 
 
@@ -409,6 +423,8 @@ class _Model:
             for _ in range(n):
                 for o in body:
                     self.run(o)
+        elif k == "churn":
+            pass  # the ballast is never read back; only the observed objects' contents matter
         else:
             raise AssertionError(k)
 
@@ -417,9 +433,9 @@ def _signed64(x):
     return x - (1 << 64) if x >> 63 else x
 
 
-def gcalias_gen(i, n_ops=None):
+def gcalias_gen(i, n_ops=None, churn=False):
     r = random.Random(0x6CA11A5 ^ i)
-    g = _Gen(r)
+    g = _Gen(r, churn)
     m = _Model()
     init = []
     for fam, locs in _LOCALS.items():
@@ -470,10 +486,19 @@ def gcalias_gen(i, n_ops=None):
     body.append("(local.set $r (array.new $R (local.get $a0) (i32.const 4)))")
     body += [emit(op) for op in ops]
     body += [emit(op) for op in sweep]
-    wat = (f"(module\n{TYPES}{HELPERS}  (func (export \"f\") (result i64) (local $acc i64) (local $i i32)\n"
-           f"    {locals_decl} (local $h (ref null $H)) (local $r (ref null $R))\n    "
+    helpers = HELPERS + (CHURN_HELPER if churn else "")
+    ballast = " (local $ballast (ref null $V))" if churn else ""
+    wat = (f"(module\n{TYPES}{helpers}  (func (export \"f\") (result i64) (local $acc i64) (local $i i32)\n"
+           f"    {locals_decl} (local $h (ref null $H)) (local $r (ref null $R)){ballast}\n    "
            + "\n    ".join(body) + "\n    (local.get $acc)))\n")
     return f"gcalias-{len(ops)}ops", "f", f"OK {_signed64(m.acc)}", wat
+
+
+def gcalias_churn_gen(i):
+    """gcalias with large live allocations interleaved (also inside loops and a callee), for running under a
+    moving collector, GC zeal and a small, movable GC heap."""
+    label, export, expected, wat = gcalias_gen(i, churn=True)
+    return "gcchurn" + label[len("gcalias"):], export, expected, wat
 
 
 def _fam_of(dyn):

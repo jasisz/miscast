@@ -47,8 +47,9 @@ class _Mem:
 
 
 class _FGen:
-    def __init__(self, r, mems, grow_helpers):
+    def __init__(self, r, mems, grow_helpers, simd=True):
         self.r = r
+        self.simd = simd
         self.mems = mems
         self.grow_helpers = grow_helpers
         self.nloop = 0
@@ -101,6 +102,7 @@ class _FGen:
         r = self.r
         m = r.choice(self.mems)
         t = r.choice(["i32", "i32", "i64", "i64", "v128"])
+        t = t if self.simd or t != "v128" else "i64"
         if r.random() < 0.55:
             op, w = r.choice(LOADS[t])
             a, off = self.addr(m, w)
@@ -135,6 +137,7 @@ class _FGen:
         i = f"$i{self.nloop}"
         self.extra.append((i, m.at))
         t = r.choice(["i32", "i64", "v128"])
+        t = t if self.simd or t != "v128" else "i64"
         op, w = r.choice(LOADS[t])
         sop, sw = r.choice(STORES[t])
         stride = r.choice([1, w, 8, 64, 4096, PAGE // 2])
@@ -165,12 +168,16 @@ class _FGen:
         return self.loop()
 
 
-def gen_module(seed, n_exports=None):
+def gen_module(seed, n_exports=None, simd=True, multi=True, mem64=True):
+    """`simd` / `multi` / `mem64` off give a portable profile for engines without SIMD, multi-memory or
+    memory64; the random stream is consumed identically, so the default profile is unchanged."""
     r = random.Random(seed ^ 0x3E3B0)
     mems = []
-    for mi in range(r.choice([1, 1, 2, 3])):
+    nmem = r.choice([1, 1, 2, 3])
+    for mi in range(nmem if multi else 1):
         init = r.choice([1, 1, 2, 3])
-        mems.append(_Mem(mi, r.random() < 0.35, init, init + r.choice([0, 1, 2, 4])))
+        is64 = r.random() < 0.35 and mem64
+        mems.append(_Mem(mi, is64, init, init + r.choice([0, 1, 2, 4])))
     lines = ["(module"] + [f"  {m.decl()}" for m in mems]
     helpers = []
     for hi in range(r.randrange(0, 3)):
@@ -181,10 +188,15 @@ def gen_module(seed, n_exports=None):
         lines.append(f"  (func $grow{hi} (result i64) {g})")
         helpers.append(f"$grow{hi}")
     for e in range(n_exports or r.randrange(4, 10)):
-        g = _FGen(r, mems, helpers)
+        g = _FGen(r, mems, helpers, simd)
         body = [f"(memory.fill {m.name} {m.const(0)} (i32.const {0x5A ^ e}) {m.size_bytes()})" for m in mems]
         body += [g.stmt() for _ in range(r.randrange(3, 14))]
         locs = " ".join(f"(local {n} {t})" for n, t in g.extra)
         lines.append(f"  (func (export \"e{e}\") (result i64) (local $h i64) {locs}\n    "
                      + "\n    ".join(body) + "\n    (local.get $h))")
     return "\n".join(lines) + ")\n"
+
+
+def gen_module_portable(seed):
+    """One 32-bit memory, no v128: runs on interpreters without SIMD / multi-memory / memory64 (e.g. WAMR)."""
+    return gen_module(seed, simd=False, multi=False, mem64=False)

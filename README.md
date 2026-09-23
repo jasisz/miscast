@@ -297,6 +297,7 @@ violation — in [`docs/findings.md`](docs/findings.md).
 | Wizard | `br_on_cast` / `br_on_cast_fail` accept an empty-result target label | `invalid` | [#655](https://github.com/titzer/wizard-engine/issues/655) |
 | Wizard | `array.copy` checks element-type subtyping backwards — narrowing copy → type confusion → host crash | `invalid` | [#656](https://github.com/titzer/wizard-engine/issues/656) |
 | Wizard | `array.new_data` / `array.new_elem` over-trap on a zero-length access of a dropped segment | probe | [#657](https://github.com/titzer/wizard-engine/issues/657) |
+| Wizard | `memory.copy` from an i64 memory into an i32 memory types the length as i64: rejects valid modules, accepts invalid ones | `memgen` | [#701](https://github.com/titzer/wizard-engine/issues/701) |
 
 Production engines are useful corroborating oracles when they agree, but no engine is privileged: V8,
 wasmtime and WasmEdge can all be selected as the SUT, and self-checking modes keep their baked oracle in

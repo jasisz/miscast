@@ -285,6 +285,17 @@ A passive data / element segment that has been `data.drop` / `elem.drop`'d has l
 zero-length array. Wizard traps `MEMORY_OOB` instead (a completeness over-trap). Found by the goblin sweep
 (GC × segments).
 
+### `memory.copy` from an i64 memory into an i32 memory types the length as i64 — [wizard#701](https://github.com/titzer/wizard-engine/issues/701)
+
+With memory64 and multi-memory, `memory.copy $dst $src` takes `[at_dst at_src min(at_dst, at_src)]`, so the
+length has the *smaller* of the two index types. Wizard types it with the **source** memory's index type, in
+both the validator and the runtime. When copying from an i64 memory into an i32 memory, it therefore *rejects*
+the valid module (`i32` length, `expected type i64, got i32`) and *accepts and runs* the invalid one (`i64`
+length), which wasm-tools, V8 and wasmtime reject. The opposite direction happens to be right, because there
+the source type is the minimum. The neighbouring `table.copy` check already takes the minimum. Not a memory-safety
+issue: the copy is still bounds-checked. Found by the `memgen` backend generator (multi-memory / memory64 bulk
+operations near the memory edge), run against a wasmtime reference through `tools/model_hunt.py`.
+
 > The two validator gaps (#654, #655) and the cast/segment bugs all reproduce on Talos and wasmz as well, but
 > there they are symptoms of an absent validator (Talos's runner does not validate on load and its operand-stack
 > type checker is admittedly future work; wasmz [#8](https://github.com/Ray-D-Song/wasmz/issues/8)) rather than

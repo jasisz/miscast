@@ -100,6 +100,38 @@ def test_simdgen_obs_keeps_default_stream():
     eq("simdgen seed 0 unchanged", hashlib.sha256(simdgen.gen_module(0).encode()).hexdigest()[:16], SIMD0_SHA)
 
 
+def test_memgen_portable_profile():
+    """The portable profile uses one 32-bit memory and no v128, and leaves the default stream untouched."""
+    for seed in range(20):
+        wat = memgen.gen_module_portable(seed)
+        eq(f"seed {seed} one memory", wat.count("(memory $"), 1)
+        assert "v128" not in wat and "(memory $m0 i64" not in wat, f"seed {seed} not portable"
+    eq("default profile unaffected", memgen.gen_module(3), memgen.gen_module(3, simd=True, multi=True, mem64=True))
+
+
+def test_model_hunt_parse():
+    """Only a whole-line result counts; Wizard's trap trace offset (`<wasm func #4> +511`) must not."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import model_hunt
+    eq("wasmedge", model_hunt.parse("-961691672050465424\n"), -961691672050465424)
+    eq("wamr", model_hunt.parse("0xf2a76284fffb0570:i64"), -961691672050465424)
+    eq("wizard", model_hunt.parse("17485052401659086192uL"), -961691672050465424)
+    eq("trap trace", model_hunt.parse("<wasm func #4> +511\n  !trap[MEMORY_OOB]"), None)
+
+
+def test_wtref_isolated():
+    """Each export runs in a fresh instance: a grow in one export is not seen by the next."""
+    if not os.path.exists(WTDIFF):
+        print("  (skip: work/wtdiff not built)")
+        return
+    from miscast import wtref
+    wat = ('(module (memory 1 4)\n'
+           '  (func (export "a") (result i64) (i64.extend_i32_s (memory.grow (i32.const 1))))\n'
+           '  (func (export "b") (result i64) (i64.extend_i32_u (memory.size))))')
+    eq("shared instance", wtref.expected(wat), {"a": 1, "b": 2})
+    eq("fresh instance per export", wtref.expected_isolated(wat), {"a": 1, "b": 1})
+
+
 def test_backend_hunt_driver():
     """tools/backend_hunt.py drives wtdiff end to end (only when the local wtdiff build exists)."""
     if not os.path.exists(WTDIFF):

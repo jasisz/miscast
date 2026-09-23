@@ -6,7 +6,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from miscast.gcalias import gcalias_gen, _Model
+from miscast.gcalias import gcalias_churn_gen, gcalias_gen, _Model
 from miscast.modes import MODES, gen_gcalias
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -74,6 +74,23 @@ def test_model_matches_wasmtime():
             _assemble(wat, path)
             if has_wasmtime:
                 eq(f"seed {seed} {label}: wasmtime follows the model", _run_wasmtime(path, export), expected)
+
+
+def test_churn_matches_wasmtime():
+    """Churn mode adds large live allocations the model ignores; the checksum must still match, also under the
+    moving (copying) collector."""
+    if not (shutil.which("wasm-tools") and shutil.which("wasmtime")):
+        print("  (skip: wasm-tools / wasmtime not on PATH)")
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "m.wasm")
+        for seed in range(8):
+            label, export, expected, wat = gcalias_churn_gen(seed)
+            eq(f"seed {seed} label", label.startswith("gcchurn-"), True)
+            _assemble(wat, path)
+            r = subprocess.run(["wasmtime", "run", "-W", "function-references=y,gc=y", "-C", "collector=copying",
+                                "--invoke", export, path], capture_output=True, text=True)
+            eq(f"seed {seed} {label}", "OK " + r.stdout.strip().splitlines()[-1] if r.returncode == 0 else r.stderr, expected)
 
 
 def test_selfcheck_hunt_driver():
