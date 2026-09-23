@@ -8,7 +8,7 @@ from .verdict import classify, classify_validation, classify_conformance, classi
 SELFCHECK_PREFIXES = ("morphism", "recgroup", "compose", "trapline", "intedge", "memory64", "memarg",
                       "bulkwrap", "atomicedge", "sharedgc", "sharedrace", "stackmap", "barrier", "optstate",
                       "memcross", "arrayops", "arraywrap", "callref", "simdlane", "nanjet", "flowmerge", "refalias",
-                      "mutalias", "packedops", "evalorder", "heapstorm", "castalgebra", "constinit")
+                      "mutalias", "gcalias", "packedops", "evalorder", "heapstorm", "castalgebra", "constinit")
 
 
 def differential(case, sut, engines=ENGINES):

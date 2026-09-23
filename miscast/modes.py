@@ -31,6 +31,8 @@
   flowmerge control-flow joins and stack-polymorphic dead code carrying GC refs through if/select/br/br_table/try_table
   refalias reference identity / alias preservation through bulk ops, extern, casts, EH and call_ref
   mutalias mutable alias write-visibility through storage, bulk ops, extern, casts, EH, call_ref and type views
+  gcalias  GC alias regions: one object read/written through many static types (subtype views, structural
+           twins, inlinable helpers, array.copy/fill) in branchy loops, with a Python-modeled i64 checksum
   packedops runtime packed-GC storage: i8/i16 struct/array set/fill/copy with sign/zero extension and truncation
   evalorder side-effecting operand order for bulk ops, calls, stores, aggregate constructors, EH payloads
   heapstorm stateful GC heap programs: many aliasing storage/copy/call/EH/extern operations plus a shadow checksum
@@ -42,7 +44,7 @@
            and extern round-trips, with a Python-modeled checksum
   castalgebra subtype / cast correctness: ref.test / ref.cast swept across the type lattice + structural-twin canonicalization + self-consistency
   constinit GC const-expr init (global / elem / data: struct.new / array.new / ref.i31, extended-const) evaluated to a baked value
-  hammer   broad deterministic sweep: all + trapline + intedge + memory64 + memarg + bulkwrap + atomicedge + memcross + arrayops + arraywrap + callref + simdlane + nanjet + flowmerge + refalias + mutalias + packedops + evalorder + heapstorm + stackmap + barrier + optstate + invalid
+  hammer   broad deterministic sweep: all + trapline + intedge + memory64 + memarg + bulkwrap + atomicedge + memcross + arrayops + arraywrap + callref + simdlane + nanjet + flowmerge + refalias + mutalias + gcalias + packedops + evalorder + heapstorm + stackmap + barrier + optstate + invalid
   invalid  a battery of spec-invalid GC modules: does the SUT reject them? (validation differential)
 """
 import os
@@ -69,6 +71,7 @@ from .nanjet import nanjet_gen
 from .flowmerge import flowmerge_gen
 from .refalias import refalias_gen
 from .mutalias import mutalias_gen
+from .gcalias import gcalias_gen
 from .packedops import packedops_gen
 from .evalorder import evalorder_gen, _FAMILIES as EVALORDER_FAMILIES
 from .heapstorm import heapstorm_gen
@@ -340,6 +343,17 @@ def gen_mutalias(_cases, n):
     return out, []
 
 
+def gen_gcalias(_cases, n):
+    """GC alias-region probes (see gcalias.py): straight-line, branchy and looping programs read and write the
+    same GC objects through several static types (subtype views, structural twins, holder/ref-array repoints,
+    inlinable helpers, array.copy / array.fill); a Python interpreter computes the expected i64 checksum."""
+    out = []
+    for i in range(n):
+        label, export, expected, wat = gcalias_gen(i)
+        out.append((f"gcalias{i}|{label}", wat, export, [], expected, "int"))
+    return out, []
+
+
 def gen_packedops(_cases, n):
     """Runtime packed-GC storage probes (see packedops.py): mutable i8/i16 struct fields and arrays,
     write truncation, signed/unsigned reads, subtype field views, array.fill, and overlapping array.copy."""
@@ -453,7 +467,7 @@ def gen_hammer(cases, n):
     memory64 high-address
     aliasing, multi-memory cross-indexing, bulk GC array operations, typed function-reference calls, SIMD lane
     algebra, NaN payload preservation, control-flow merge typing, reference identity preservation, mutable-alias write visibility,
-    packed-GC storage, side-effecting operand order, and stateful heap storms. The invalid validation battery
+    GC alias-region load/store forwarding, packed-GC storage, side-effecting operand order, and stateful heap storms. The invalid validation battery
     is added by the CLI."""
     out, untested = gen_all(cases, n)
     for gen, count in ((gen_trapline, min(n, 48)), (gen_intedge, min(n, 88)), (gen_memory64, min(n, 36)),
@@ -463,6 +477,7 @@ def gen_hammer(cases, n):
                        (gen_callref, min(n, 36)), (gen_simdlane, min(n, 64)),
                        (gen_nanjet, min(n, 72)),
                        (gen_flowmerge, min(n, 40)), (gen_refalias, min(n, 40)), (gen_mutalias, min(n, 40)),
+                       (gen_gcalias, min(n, 40)),
                        (gen_packedops, min(n, 48)), (gen_evalorder, min(n, 48)),
                        (gen_heapstorm, min(n, 48)), (gen_stackmap, min(n, 25)),
                        (gen_barrier, min(n, 30)), (gen_optstate, min(n, 30))):
@@ -486,6 +501,7 @@ MODES = {"replay": gen_replay, "mutate": gen_mutate, "smith": gen_smith, "morphi
          "flowmerge": gen_flowmerge,
          "refalias": gen_refalias,
          "mutalias": gen_mutalias,
+         "gcalias": gen_gcalias,
          "packedops": gen_packedops,
          "evalorder": gen_evalorder,
          "heapstorm": gen_heapstorm,

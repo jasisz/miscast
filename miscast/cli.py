@@ -60,7 +60,7 @@ def main():
                          "morphism/recgroup/compose (compose subsumes the old castbr/externconvert/eh/exnstack), "
                          "seqscript (generated stateful .wast scripts), "
                          "invalid (spec-invalid validation battery), 'all' for the GC oracle suite + the battery, "
-                         "or 'hammer' for all + trapline/memory64/atomicedge/memcross/arrayops/arraywrap/callref/simdlane/nanjet/flowmerge/refalias/mutalias/packedops/evalorder/heapstorm/stackmap/barrier/optstate; "
+                         "or 'hammer' for all + trapline/memory64/atomicedge/memcross/arrayops/arraywrap/callref/simdlane/nanjet/flowmerge/refalias/mutalias/gcalias/packedops/evalorder/heapstorm/stackmap/barrier/optstate; "
                          "sharedgc/sharedrace target experimental d8 --wasm-shared")
     ap.add_argument("--seeds", default=SEEDS_DEFAULT, help="dir of .wast / .wat corpus")
     ap.add_argument("--sut", required=True, help="engine under test (e.g. wasmtime, custom); the rest are oracles")

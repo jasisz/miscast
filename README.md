@@ -12,8 +12,8 @@ ill-typed cases; curated hand-seeds cover the corners the testsuite misses.
 It also **generates self-checking** GC-soundness programs that carry their own oracle
 — a shadow-GC model, rec-group canonicalization, extern-convert round-trips,
 `br_on_cast` value-forwarding, exception-handling unwinding, typed function-reference calls, control-flow
-merge typing, multi-memory bulk-memory indexing, SIMD lane algebra, NaN payload preservation, reference-identity preservation, mutable-alias write visibility, packed GC storage, operand-evaluation order, stateful heap storms, and precise-GC stack maps (the
-`morphism` / `recgroup` / `compose` / `memcross` / `callref` / `simdlane` / `nanjet` / `flowmerge` / `refalias` / `mutalias` / `packedops` / `evalorder` / `heapstorm` / `stackmap` / `barrier` modes) — so a single engine's wrong answer is a
+merge typing, multi-memory bulk-memory indexing, SIMD lane algebra, NaN payload preservation, reference-identity preservation, mutable-alias write visibility, GC alias-region load/store forwarding, packed GC storage, operand-evaluation order, stateful heap storms, and precise-GC stack maps (the
+`morphism` / `recgroup` / `compose` / `memcross` / `callref` / `simdlane` / `nanjet` / `flowmerge` / `refalias` / `mutalias` / `gcalias` / `packedops` / `evalorder` / `heapstorm` / `stackmap` / `barrier` modes) — so a single engine's wrong answer is a
 self-evident bug with no second engine to consult; and a curated battery of spec-invalid
 modules plus explicitly marked compatibility probes (`invalid`). These found the
 maturing-interpreter bugs below.
@@ -22,7 +22,7 @@ maturing-interpreter bugs below.
 botched subtype/cast check) a conformant engine would reject.
 
 ```
-python3 -m miscast --sut ENGINE [--mode replay|mutate|smith|seqscript|morphism|recgroup|compose|trapline|intedge|memory64|memarg|bulkwrap|atomicedge|sharedgc|sharedrace|memcross|arrayops|arraywrap|callref|simdlane|nanjet|flowmerge|refalias|mutalias|packedops|evalorder|heapstorm|stackmap|barrier|optstate|castalgebra|constinit|invalid|all|hammer] [--oracles LIST] [--seeds DIR] [-n N] [--overtrap]
+python3 -m miscast --sut ENGINE [--mode replay|mutate|smith|seqscript|morphism|recgroup|compose|trapline|intedge|memory64|memarg|bulkwrap|atomicedge|sharedgc|sharedrace|memcross|arrayops|arraywrap|callref|simdlane|nanjet|flowmerge|refalias|mutalias|gcalias|packedops|evalorder|heapstorm|stackmap|barrier|optstate|castalgebra|constinit|invalid|all|hammer] [--oracles LIST] [--seeds DIR] [-n N] [--overtrap]
 ```
 
 **No third-party dependencies** — only the Python standard library. The one external
@@ -30,7 +30,7 @@ tool it requires is `wasm-tools`; the engines are optional and auto-detected: `n
 (≥22, for the V8 oracle), `wasmtime`, `wasmedge`, `iwasm` (WAMR), and the reference interpreter (via `SPEC_WASM`).
 Run from the repo root. The code is a small package (`miscast/`): `config` /
 `toolchain` / `engines` / `verdict` / `runner` / `mutate` / `reify` / `morphism` /
-`recgroup` / `compose` / `seqscript` / `trapline` / `intedge` / `memory64` / `memarg` / `bulkwrap` / `memcross` / `arrayops` / `callref` / `simdlane` / `nanjet` / `flowmerge` / `refalias` / `mutalias` / `packedops` / `evalorder` / `heapstorm` / `stackmap` / `barrier` / `castalgebra` / `constinit` / `invalid` / `wast` / `reduce` / `modes` / `repro` /
+`recgroup` / `compose` / `seqscript` / `trapline` / `intedge` / `memory64` / `memarg` / `bulkwrap` / `memcross` / `arrayops` / `callref` / `simdlane` / `nanjet` / `flowmerge` / `refalias` / `mutalias` / `gcalias` / `packedops` / `evalorder` / `heapstorm` / `stackmap` / `barrier` / `castalgebra` / `constinit` / `invalid` / `wast` / `reduce` / `modes` / `repro` /
 `cli`, plus an optional Rust embedder in `runner/`.
 
 ## Native input: `.wast`
@@ -121,6 +121,7 @@ faults the host with an `ArrayIndexOutOfBoundsException`, where a plain UNSUP wo
 | `flowmerge` | a **control-flow merge** generator: GC refs flow through `if`, typed `select`, `br`, `br_table`, `try_table` / `catch_ref`, nullable joins, and stack-polymorphic dead code after `unreachable`. Self-checking — successful joins read a baked struct field; dead-code probes must validate and then trap before the dead GC op executes. |
 | `refalias` | a **reference-identity** generator: `ref.eq` checks that a GC object remains the same object through fields, arrays, `array.copy`, `table.copy` / `table.fill`, extern round-trips, `br_on_cast`, `try_table` / `throw_ref`, and `call_ref`; negative controls make fresh equal-shaped objects that must not compare equal. |
 | `mutalias` | a **mutable-alias** generator: after routing one GC object through fields, arrays, `array.copy`, `table.copy` / `fill`, globals, extern round-trips, `br_on_cast`, `try_table` / `throw_ref`, `call_ref` / `return_call_ref`, structural-twin casts, and subtype views, it mutates through one alias and reads through another. A stale read, clone-on-store, wrong write barrier, or wrong type-view layout becomes a baked value mismatch. |
+| `gcalias` | a **GC alias-region** generator aimed at optimizers that give struct fields / array elements their own alias classes (so redundant-load elimination and store-to-load forwarding can move across GC accesses): random straight-line, branchy and looping programs read and write the same objects through **every legal static type** — subtype views, separately declared structural twins, locals repointed through a holder struct and a ref-array, small helpers that an inliner can fold in, and `array.copy` / `array.fill` on aliased arrays — mixing every read into an `i64` checksum. The expected checksum is computed by a Python interpreter of the same program, and every program is trap-free, so any other value is a miscompile. |
 | `packedops` | a **runtime packed-GC storage** generator: mutable `i8` / `i16` struct fields and arrays are written at execution time, then read via `get_s` / `get_u` after truncation, subtype field views, `array.fill`, and overlapping `array.copy`. This is the execution-side complement to `constinit`'s packed segment/const-expression checks. |
 | `evalorder` | a **side-effecting operand-order** generator: every operand position calls `next()` and increments a global, then multi-operand runtime ops (`memory.copy/fill/init`, `array.copy/fill/init_*`, `table.copy/fill/init/grow/set`, `select`, `br_table`, `call_indirect`, `call_ref`, `return_call_ref`, `struct.new/set`, `array.new/new_fixed/set`, `i32.store8`, and exception payload `throw`) return a checksum proving both evaluation order and stack-pop order. This catches engines that reverse operands while lowering folded WAT or implementing bulk/call/EH instructions. |
 | `heapstorm` | a **stateful GC heap-storm** generator: builds small GC heaps with locals, arrays, tables, boxes, and a global, then runs 20-40 interleaved operations — bulk copies/fills, alias repoints, writes through several paths, `br_on_cast`, `try_table` / `throw_ref`, extern round-trips, `call_ref` / `return_call_ref` — before reading a weighted checksum from many aliases. The oracle is a Python shadow model of the heap, so it catches stale reads, clone-on-copy, wrong bulk-op order, lost aliases, and write-visibility bugs that only appear after several operations. |
@@ -131,12 +132,48 @@ faults the host with an `ArrayIndexOutOfBoundsException`, where a plain UNSUP wo
 | `constinit` | a **GC constant-expression init** generator: a `global` / `elem` / `data` segment initialised with `struct.new` / `array.new` / `ref.i31` — optionally **extended-const** arithmetic, nested values, `i31` sign/zero-extension boundaries (`get_s` vs `get_u`), packed `i8`/`i16` data, complex segment slices (offset + partial count) — then read back to its baked value. Catches an engine that **rejects a valid** const-init (reproduces Talos#109's `struct.new` global over-reject) or **mis-evaluates / crashes** on one (reproduces wasmz#4's `ref.i31` const-expr panic). Self-checking; the invalid const-inits (non-constant operator, wrong-typed initialiser, forward reference) live in the `invalid` battery. |
 | `invalid` | a curated battery of **spec-invalid GC modules** (`corpus/invalid/*.wat`, one per case) routed to the validation differential — type-section subtyping (narrow / drop / retype a field, extend a `final` type, wrong function-subtyping variance), operand-stack typing (wrong block / function result type or arity, non-defaultable `array.new_default`, mismatched `call_ref` callee), reference-type casts (a `ref.test` / `ref.cast` whose target heap type is in a different hierarchy than the operand, a `br_on_cast` / `br_on_cast_fail` whose target label cannot receive the forwarded operand), and **GC const-init** validation (a non-constant operator, a wrong-typed / wrong-arity `struct.new`, a forward global reference, a non-extended-const `f32.add`, `array.new_default` of a non-defaultable element). A depth-64 case is kept as a soft implementation-limit probe, not a standalone upstream-reportable spec violation. Every true spec-invalid case should be rejected; a SUT that **accepts and runs** one has no validator for that rule and is unsound. Add a case by dropping a `.wat` into the corpus. |
 | `all` | run the whole **self-checking soundness oracle suite** (`morphism` + `recgroup` + `compose` — the last subsuming the old `castbr` / `externconvert` / `eh` / `exnstack` — plus `castalgebra` + `constinit`) **and** the `invalid` validation battery in one command — no corpus needed, each execution program is its own oracle, and a finding's case name says which probe fired. |
-| `hammer` | a broader deterministic engine sweep: `all` + `trapline` + `intedge` + `memory64` + `memarg` + `bulkwrap` + `atomicedge` + `memcross` + `arrayops` + `arraywrap` + `callref` + `simdlane` + `nanjet` + `flowmerge` + `refalias` + `mutalias` + `packedops` + `evalorder` + `heapstorm` + `stackmap` + `barrier` + `optstate` + `invalid`, useful when throwing the full targeted suite at mature engines such as WasmEdge / wasmtime. `sharedgc` remains separate because it requires experimental d8 flags. |
+| `hammer` | a broader deterministic engine sweep: `all` + `trapline` + `intedge` + `memory64` + `memarg` + `bulkwrap` + `atomicedge` + `memcross` + `arrayops` + `arraywrap` + `callref` + `simdlane` + `nanjet` + `flowmerge` + `refalias` + `mutalias` + `gcalias` + `packedops` + `evalorder` + `heapstorm` + `stackmap` + `barrier` + `optstate` + `invalid`, useful when throwing the full targeted suite at mature engines such as WasmEdge / wasmtime. `sharedgc` remains separate because it requires experimental d8 flags. |
 
 The standalone `tools/wasmtime_race` crate links directly against `work/wasmtime-current/crates/wasmtime` and exercises host-thread sharing that the CLI cannot express: six-instance fetch-add, release/acquire publication, wait/notify, publication of a newly grown page, and concurrent grow/access races. It runs each invariant under Cranelift opt 0, opt 2, and an explicit-bounds configuration:
 
 ```bash
 CARGO_TARGET_DIR=work/wasmtime-current/target cargo run --release --manifest-path tools/wasmtime_race/Cargo.toml
+```
+
+### wasmtime backend differential
+
+wasmtime ships several code generators for the same module — Cranelift at `opt-level` 2 and 0, the Winch
+baseline compiler, and the Pulley interpreter — so one wasmtime build can serve as its own oracle.
+`work/wtdiff` is a small local Rust embedder (built against `work/wasmtime-current`; `work/` is not
+versioned) that compiles one module under each strategy, calls every zero-parameter export, prints one
+result line per (strategy, export) and exits with status 3 when any strategy disagrees with the first.
+Traps are compared by trap code. Winch runs without GC and function references, so modules using them only
+make sense with `--cfgs cl2,cl0,pulley`.
+
+`tools/backend_hunt.py` feeds it generated modules in parallel and keeps every module that differs, crashes
+or times out (`.wat` plus the `wtdiff` output, under `--out`). Its generators take a seed and return WAT:
+`miscast.simdgen` (deep SIMD expression trees over random memory, NaN lanes canonicalized before they
+become observable), `miscast.tailgen` (`return_call` / `return_call_indirect` chains between functions
+with many stack-passed parameters and multi-value results) and `miscast.exngen` (structured control flow
+with `try_table` / `throw` / `throw_ref` while live values of every type sit on the operand stack),
+`miscast.memgen` (loads, stores and bulk ops on or just past the end of memory — run-time edges from
+`memory.size`, data-dependent addresses, large offsets, memory64 and multi-memory, loops that call a
+`memory.grow` helper — best run with the `+dyn` explicit-bounds and `+nosig` modifiers as extra
+configurations) and `miscast.intalg` (integer expression trees built from the shapes of recent Cranelift
+mid-end rules and aarch64 bitfield lowering). `simdgen:gen_module_obs` is a SIMD variant that also folds every
+intermediate value into the result, so a wrong lane deep in a tree is not hidden by a saturating root.
+Because Cranelift O2 / O0 and Pulley share the Wasm-to-CLIF translator, a bug there gives every configuration
+the same wrong answer; `--oracle miscast.watmodel:expected` adds an independent reference for `intalg`
+(a small interpreter of the emitted WAT text) that every configuration must also match.
+`tools/selfcheck_hunt.py` is the counterpart for generators with a baked expected value, such as
+`miscast.gcalias:gcalias_gen`: it runs each case under several wasmtime CLI configurations (collectors,
+inlining, opt level) and reports any result that differs from the model.
+
+```bash
+python3 tools/backend_hunt.py miscast.simdgen:gen_module 0 2000 -j 8 --out work/backend-hits/simd
+python3 tools/backend_hunt.py miscast.intalg:gen_module 0 20000 --oracle miscast.watmodel:expected
+python3 tools/backend_hunt.py miscast.memgen:gen_module 0 5000 --cfgs cl2,cl0,winch,pulley,cl2+dyn,winch+dyn,pulley+dyn
+python3 tools/selfcheck_hunt.py miscast.gcalias:gcalias_gen 0 3000 --wt ~/wasm-engines/wthead/bin/wasmtime
 ```
 
 ## The shadow-GC oracle (`--mode morphism`)
