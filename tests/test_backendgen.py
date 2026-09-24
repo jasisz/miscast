@@ -7,13 +7,14 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from miscast import exngen, intalg, memgen, simdgen, tailgen
+from miscast import exngen, intalg, loopgen, memgen, simdgen, tailgen
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WTDIFF = os.path.join(ROOT, "work", "wtdiff", "target", "release", "wtdiff")
 GENS = {"simdgen": simdgen.gen_module, "simdgen-obs": simdgen.gen_module_obs, "tailgen": tailgen.gen_module,
-        "exngen": exngen.gen_module, "memgen": memgen.gen_module, "intalg": intalg.gen_module}
-TRAP_FREE = ("simdgen", "simdgen-obs", "tailgen", "exngen", "intalg")  # memgen traps on purpose (out-of-bounds probes)
+        "exngen": exngen.gen_module, "memgen": memgen.gen_module, "intalg": intalg.gen_module,
+        "loopgen": loopgen.gen_module}
+TRAP_FREE = ("simdgen", "simdgen-obs", "tailgen", "exngen", "intalg", "loopgen")  # memgen traps on purpose (out-of-bounds probes)
 N_SEEDS = 12
 SIMD0_SHA = "6330f4d115151e18"  # simdgen.gen_module(0) as used by the 2026-09-23 campaigns
 EXPORT = re.compile(r'\(func \(export "([^"]+)"\)([^\n]*)')
@@ -67,7 +68,7 @@ def test_exports_do_not_trap():
                 wat = gen(seed)
                 subprocess.run(["wasm-tools", "parse", "/dev/stdin", "-o", path], input=wat.encode(), check=True)
                 for name, _sig in EXPORT.findall(wat):
-                    r = subprocess.run(["wasmtime", "run", "-W", "tail-call=y,exceptions=y", "--invoke", name, path],
+                    r = subprocess.run(["wasmtime", "run", "-W", "tail-call=y,exceptions=y,gc=y,function-references=y", "--invoke", name, path],
                                        capture_output=True, text=True)
                     assert r.returncode == 0, f"{g} seed {seed} export {name}: {r.stderr.strip()[-200:]}"
 

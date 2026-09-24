@@ -21,6 +21,14 @@ WIZARD_MAIN_JAR = os.path.join(ENG, "build", "wizard-main", "bin", "wizeng.jvm.j
 _WE_CAPS = ["--memory-page-limit", "2048", "--time-limit", "10000"]
 
 
+WAMRC = os.path.join(ROOT, "work", "wamrc-build", "wamrc")
+_WAMR_GC = ["--heap-size=0", "--gc-heap-size=67108864"]
+
+
+def _wamrc(opt):
+    return lambda w, o: CAP + [WAMRC, f"--opt-level={opt}", "--enable-gc", "--enable-tail-call", "-o", o, w]
+
+
 def _wizard_main(w, e):
     return CAP + ["/opt/homebrew/opt/openjdk/bin/java", "-jar", WIZARD_MAIN_JAR, f"--invoke={e}", "--print-result", w]
 
@@ -49,9 +57,15 @@ ENGINES = {
     "wasmedge-main-aot": (lambda w, o: CAP + [WASMEDGE_MAIN, "compile", "--optimize", "3", w, o],
                           lambda w, e: CAP + [WASMEDGE_MAIN, "run"] + _WE_CAPS + ["--reactor", w, e]),
     "wizard-main": (None, _wizard_main),
+    # WAMR AOT (wamrc, LLVM) executed by an AOT+GC iwasm built with ASan/UBSan
+    "wamr-aot": (_wamrc(3), lambda w, e: CAP + [os.path.join(ROOT, "work", "wamr-build-aot-asan", "iwasm")] + _WAMR_GC
+                 + ["-f", e, w]),
+    "wamr-aot0": (_wamrc(0), lambda w, e: CAP + [os.path.join(ROOT, "work", "wamr-build-aot-asan", "iwasm")]
+                  + _WAMR_GC + ["-f", e, w]),
 }
 # the engine lacks a feature the module uses: not a finding (a spec-invalid rejection is still reported)
-_UNSUP = re.compile(r"load failed|not supported|unsupported|not enabled|not implemented|unimplemented", re.I)
+_UNSUP = re.compile(r"load failed|not supported|unsupported|not enabled|not implemented|unimplemented|"
+                    r"invalid section id", re.I)
 # a result is a whole line: `-123`, `0xff..:i64` (WAMR) or `123uL` (Wizard). Anything else (e.g. Wizard's
 # trap trace `<wasm func #4> +511`) is not a result.
 _NUM = re.compile(r"^(0x[0-9a-fA-F]+)(?::i(?:32|64))?$|^(-?\d+)(?:uL|L)?$")
@@ -120,7 +134,10 @@ def one(a, gen, oracle, seed, tmp):
             art = base + f".{name}.so"
             p = _run(compile_step(base + ".wasm", art), a.timeout, base)
             if p.returncode:
-                bad.append((name, "*", f"COMPILE rc={p.returncode} {(p.stderr or p.stdout).strip()[-200:]}", None))
+                if _UNSUP.search(p.stderr + p.stdout):
+                    unsup.append(name)
+                else:
+                    bad.append((name, "*", f"COMPILE rc={p.returncode} {(p.stderr or p.stdout).strip()[-200:]}", None))
                 continue
         for export, exp in want.items():
             if name in unsup:
