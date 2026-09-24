@@ -317,3 +317,20 @@ by the `exngen` generator through `tools/model_hunt.py`, then reduced automatica
 > `ArrayIndexOutOfBoundsException`), and **Talos**'s runtime field-bounds check contains it (a clean error). V8,
 > wasmtime and WasmEdge reject all of it. (A reported `i31.get_s` "sign-extension" divergence turned out to be a
 > signed/unsigned *display* difference, identical bits — not a bug.)
+
+## wasmtime
+
+### `call_ref` and caught exceptions drop callee fuel usage — [GHSA-m63x-6p34-q65x](https://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-m63x-6p34-q65x)
+
+With fuel metering on, Cranelift-compiled code (including Pulley) resets the remaining fuel to its value before
+the call when the call goes through `call_ref`, or when the callee's exception is caught by a `try_table` in the
+caller. The fuel the callee spent is lost. Nesting such calls lets a guest run for exponential time on linear fuel,
+which defeats fuel-based timeouts (a denial-of-service bug). Fixed in Wasmtime 48.0.3 and 49.0.1.
+
+miscast's backend differential (`tools/backend_hunt.py` driving `wtdiff`) ran the same module under Cranelift, Winch
+and Pulley and noticed that Cranelift's remaining fuel stayed high after such calls. Equal fuel across backends is
+not guaranteed, so that alone is not a bug. What makes it one is that the callee's work was not charged at all. We
+reported it privately on 2026-09-23, but the maintainers were already handling the same issue from their own report
+and published the advisory the next day, crediting that report. This entry records an independent rediscovery, not
+the original report.
+
