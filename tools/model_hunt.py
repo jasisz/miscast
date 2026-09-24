@@ -33,6 +33,16 @@ def _wamrc(opt):
     return lambda w, o: CAP + [WAMRC, f"--opt-level={opt}", "--enable-gc", "--enable-tail-call", "-o", o, w]
 
 
+def _endive(mode):
+    """Endive main (Chicory's successor, built from ~/wasm-engines/build/endive-main) through
+    ~/wasm-engines/chicory/endive/EndiveRun; mode is `interp` or `aot` (the JVM-bytecode compiler)."""
+    d = os.path.join(ENG, "chicory")
+    def argv(w, e):
+        cp = open(os.path.join(d, "endive-classpath.txt")).read().strip() + ":" + os.path.join(d, "endive")
+        return CAP + ["/opt/homebrew/opt/openjdk/bin/java", "-cp", cp, "EndiveRun", mode, w, e]
+    return argv
+
+
 def _wizard_main(w, e):
     return CAP + ["/opt/homebrew/opt/openjdk/bin/java", "-jar", WIZARD_MAIN_JAR, f"--invoke={e}", "--print-result", w]
 
@@ -66,6 +76,8 @@ ENGINES = {
     "wizard-main": (None, _wizard_main),
     "wasmer-sp": (None, lambda w, e: CAP + [WASMER_MAIN, "run", "--singlepass"] + _WASMER_FEAT + ["--invoke", e, w]),
     "wasmer-cl": (None, lambda w, e: CAP + [WASMER_MAIN, "run", "--cranelift"] + _WASMER_FEAT + ["--invoke", e, w]),
+    "endive": (None, _endive("interp")),
+    "endive-aot": (None, _endive("aot")),
     "wasm3": (None, lambda w, e: CAP + [WASM3_MAIN, "--stack-size", "8388608", "--func", e, w]),
     "wasm3-eager": (None, lambda w, e: CAP + [WASM3_MAIN, "--compile", "--stack-size", "8388608", "--func", e, w]),
     "wasmi": (None, lambda w, e: CAP + [os.path.join(ENG, "wasmi", "bin", "wasmi"), "--compilation-mode", "eager",
@@ -80,7 +92,7 @@ ENGINES = {
 }
 # the engine lacks a feature the module uses: not a finding (a spec-invalid rejection is still reported)
 _UNSUP = re.compile(r"load failed|loading failed: illegal opcode|not supported|unsupported|not enabled|not implemented|not yet implemented|unimplemented|"
-                    r"invalid section id|does not support the required features", re.I)
+                    r"invalid section id|does not support the required features|doesn.t recognize Instruction|Unhandled opcode", re.I)
 # a result is a whole line: `-123`, `0xff..:i64` (WAMR) or `123uL` (Wizard). Anything else (e.g. Wizard's
 # trap trace `<wasm func #4> +511`) is not a result.
 _NUM = re.compile(r"^(0x[0-9a-fA-F]+)(?::i(?:32|64))?$|^(-?\d+)(?:uL|L)?$")
