@@ -296,6 +296,16 @@ the source type is the minimum. The neighbouring `table.copy` check already take
 issue: the copy is still bounds-checked. Found by the `memgen` backend generator (multi-memory / memory64 bulk
 operations near the memory edge), run against a wasmtime reference through `tools/model_hunt.py`.
 
+### After `catch_all` of an exception with a payload, the V3 interpreter sees a value of the wrong kind — [wizard#705](https://github.com/titzer/wizard-engine/issues/705)
+
+A valid module keeps an `i64` live on the operand stack below a block. Inside that block, a `try_table (catch_all ...)`
+catches an exception whose tag carries an `f64` payload. After the catch, the next `i64.xor` receives an `f64`, and the
+JVM build of the V3 interpreter throws `ClassCastException: V3C_Value$DF64 cannot be cast to V3C_Value$DI64`. wasmtime
+and V8 return the spec result. Across about 1000 generated exception-handling programs on Wizard main (5e91335), 13
+misbehave: 11 throw a `ClassCastException` between value kinds (`DF64`/`DI32`/`DV128` → `DI64`, `DI64` → `DF32`), and 2
+return a wrong value. The symptom suggests the tag payload is left on the operand stack when `catch_all` branches. Found
+by the `exngen` generator through `tools/model_hunt.py`, then reduced automatically.
+
 > The two validator gaps (#654, #655) and the cast/segment bugs all reproduce on Talos and wasmz as well, but
 > there they are symptoms of an absent validator (Talos's runner does not validate on load and its operand-stack
 > type checker is admittedly future work; wasmz [#8](https://github.com/Ray-D-Song/wasmz/issues/8)) rather than
