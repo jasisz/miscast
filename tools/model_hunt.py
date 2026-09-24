@@ -76,7 +76,7 @@ ENGINES = {
                   + _WAMR_GC + ["-f", e, w]),
 }
 # the engine lacks a feature the module uses: not a finding (a spec-invalid rejection is still reported)
-_UNSUP = re.compile(r"load failed|not supported|unsupported|not enabled|not implemented|not yet implemented|unimplemented|"
+_UNSUP = re.compile(r"load failed|loading failed: illegal opcode|not supported|unsupported|not enabled|not implemented|not yet implemented|unimplemented|"
                     r"invalid section id|does not support the required features", re.I)
 # a result is a whole line: `-123`, `0xff..:i64` (WAMR) or `123uL` (Wizard). Anything else (e.g. Wizard's
 # trap trace `<wasm func #4> +511`) is not a result.
