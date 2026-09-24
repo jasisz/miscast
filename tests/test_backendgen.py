@@ -7,14 +7,14 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from miscast import exngen, intalg, loopgen, memgen, simdgen, tailgen
+from miscast import cmpfuse, exngen, intalg, loopgen, memgen, simdgen, tailgen
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WTDIFF = os.path.join(ROOT, "work", "wtdiff", "target", "release", "wtdiff")
 GENS = {"simdgen": simdgen.gen_module, "simdgen-obs": simdgen.gen_module_obs, "tailgen": tailgen.gen_module,
         "exngen": exngen.gen_module, "memgen": memgen.gen_module, "intalg": intalg.gen_module,
-        "loopgen": loopgen.gen_module}
-TRAP_FREE = ("simdgen", "simdgen-obs", "tailgen", "exngen", "intalg", "loopgen")  # memgen traps on purpose (out-of-bounds probes)
+        "loopgen": loopgen.gen_module, "cmpfuse": cmpfuse.gen_module}
+TRAP_FREE = ("simdgen", "simdgen-obs", "tailgen", "exngen", "intalg", "loopgen", "cmpfuse")  # memgen traps on purpose (out-of-bounds probes)
 N_SEEDS = 12
 SIMD0_SHA = "6330f4d115151e18"  # simdgen.gen_module(0) as used by the 2026-09-23 campaigns
 EXPORT = re.compile(r'\(func \(export "([^"]+)"\)([^\n]*)')

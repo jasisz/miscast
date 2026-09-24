@@ -22,6 +22,13 @@ class Trap(Exception):
     pass
 
 
+class _Br(Exception):
+    """A taken `br` / `br_if` unwinding to the enclosing block labelled `label`."""
+
+    def __init__(self, label, value):
+        self.label, self.value = label, value
+
+
 def parse(text):
     stack = [[]]
     for tok in _TOK.findall(text):
@@ -92,8 +99,38 @@ class _Func:
             v = _sx(v, size * 8)
         return v & ((1 << _W[t]) - 1)
 
+    def _seq(self, items):
+        last = None
+        for ins in items:
+            last = self.ev(ins)
+        return last
+
     def ev(self, n):
         op = n[0]
+        if op == "block":
+            label = n[1] if len(n) > 1 and isinstance(n[1], str) and n[1].startswith("$") else None
+            body = [x for x in n[1:] if isinstance(x, list) and x[0] != "result"]
+            try:
+                return self._seq(body)
+            except _Br as br:
+                if br.label != label:
+                    raise
+                return br.value
+        if op == "if":
+            parts = [x for x in n[1:] if isinstance(x, list) and x[0] != "result"]
+            cond, arms = parts[0], {x[0]: x[1:] for x in parts[1:]}
+            return self._seq(arms.get("then", []) if self.ev(cond) else arms.get("else", []))
+        if op in ("br", "br_if"):
+            label, args = n[1], n[2:]
+            if op == "br":
+                raise _Br(label, self.ev(args[0]) if args else None)
+            value = self.ev(args[0]) if len(args) == 2 else None
+            if self.ev(args[-1]):
+                raise _Br(label, value)
+            return value
+        if op == "drop":
+            self.ev(n[1])
+            return None
         if op == "local.get":
             return self.locals[n[1]]
         if op == "local.set":

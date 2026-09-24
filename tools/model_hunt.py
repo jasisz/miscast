@@ -19,6 +19,9 @@ WASMEDGE = os.path.join(ENG, "wasmedge", "bin", "wasmedge")
 WASMEDGE_MAIN = os.path.join(ENG, "build", "wasmedge-main", "build", "tools", "wasmedge", "wasmedge")
 WIZARD_MAIN_JAR = os.path.join(ENG, "build", "wizard-main", "bin", "wizeng.jvm.jar")
 _WE_CAPS = ["--memory-page-limit", "2048", "--time-limit", "10000"]
+WASMER_MAIN = os.path.join(ENG, "build", "wasmer-main", "target", "release", "wasmer")
+# no --enable-* flags: asking a backend for a feature it lacks makes wasmer refuse every module
+_WASMER_FEAT = []
 
 
 WAMRC = os.path.join(ROOT, "work", "wamrc-build", "wamrc")
@@ -57,6 +60,12 @@ ENGINES = {
     "wasmedge-main-aot": (lambda w, o: CAP + [WASMEDGE_MAIN, "compile", "--optimize", "3", w, o],
                           lambda w, e: CAP + [WASMEDGE_MAIN, "run"] + _WE_CAPS + ["--reactor", w, e]),
     "wizard-main": (None, _wizard_main),
+    "wasmer-sp": (None, lambda w, e: CAP + [WASMER_MAIN, "run", "--singlepass"] + _WASMER_FEAT + ["--invoke", e, w]),
+    "wasmer-cl": (None, lambda w, e: CAP + [WASMER_MAIN, "run", "--cranelift"] + _WASMER_FEAT + ["--invoke", e, w]),
+    "wasmi": (None, lambda w, e: CAP + [os.path.join(ENG, "wasmi", "bin", "wasmi"), "--compilation-mode", "eager",
+                                        "--invoke", e, w]),
+    "wasmi-lazy": (None, lambda w, e: CAP + [os.path.join(ENG, "wasmi", "bin", "wasmi"), "--compilation-mode", "lazy",
+                                             "--invoke", e, w]),
     # WAMR AOT (wamrc, LLVM) executed by an AOT+GC iwasm built with ASan/UBSan
     "wamr-aot": (_wamrc(3), lambda w, e: CAP + [os.path.join(ROOT, "work", "wamr-build-aot-asan", "iwasm")] + _WAMR_GC
                  + ["-f", e, w]),
@@ -64,8 +73,8 @@ ENGINES = {
                   + _WAMR_GC + ["-f", e, w]),
 }
 # the engine lacks a feature the module uses: not a finding (a spec-invalid rejection is still reported)
-_UNSUP = re.compile(r"load failed|not supported|unsupported|not enabled|not implemented|unimplemented|"
-                    r"invalid section id", re.I)
+_UNSUP = re.compile(r"load failed|not supported|unsupported|not enabled|not implemented|not yet implemented|unimplemented|"
+                    r"invalid section id|does not support the required features", re.I)
 # a result is a whole line: `-123`, `0xff..:i64` (WAMR) or `123uL` (Wizard). Anything else (e.g. Wizard's
 # trap trace `<wasm func #4> +511`) is not a result.
 _NUM = re.compile(r"^(0x[0-9a-fA-F]+)(?::i(?:32|64))?$|^(-?\d+)(?:uL|L)?$")
