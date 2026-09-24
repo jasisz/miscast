@@ -299,6 +299,8 @@ violation — in [`docs/findings.md`](docs/findings.md).
 | Wizard | `array.new_data` / `array.new_elem` over-trap on a zero-length access of a dropped segment | probe | [#657](https://github.com/titzer/wizard-engine/issues/657) |
 | Wizard | `memory.copy` from an i64 memory into an i32 memory types the length as i64: rejects valid modules, accepts invalid ones | `memgen` | [#701](https://github.com/titzer/wizard-engine/issues/701) |
 | Wizard | after `catch_all` of an exception with a payload, the interpreter sees a value of the wrong kind: `ClassCastException` or a wrong result | `exngen` | [#705](https://github.com/titzer/wizard-engine/issues/705) |
+| wasmi | 2.0.0 regression: `select` whose condition tests against zero (`x != 0`, `x == 0`, `eqz`, `eqz eqz`) always returns the same operand | `intalg` / `cmpfuse` | [#2046](https://github.com/wasmi-labs/wasmi/issues/2046) |
+| Endive (Chicory) | interpreter throws `IndexOutOfBoundsException` in `RETURN_CALL` after a nested call that itself ended in `return_call` | `tailgen` | [#212](https://github.com/bytecodealliance/endive/issues/212) |
 | wasmtime | Cranelift drops a callee's fuel usage across `call_ref` and caught exceptions (fuel-metering bypass). *Found independently and reported privately while the maintainers already had a fix in progress; the advisory credits their own report.* | backend differential (`tools/backend_hunt.py` + wtdiff) | [GHSA-m63x-6p34-q65x](https://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-m63x-6p34-q65x) |
 
 Production engines are useful corroborating oracles when they agree, but no engine is privileged: V8,

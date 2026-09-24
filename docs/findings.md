@@ -318,6 +318,29 @@ by the `exngen` generator through `tools/model_hunt.py`, then reduced automatica
 > wasmtime and WasmEdge reject all of it. (A reported `i31.get_s` "sign-extension" divergence turned out to be a
 > signed/unsigned *display* difference, identical bits — not a bug.)
 
+## wasmi (a Rust WebAssembly interpreter)
+
+### `select` with a zero-test condition always returns the same operand — [wasmi#2046](https://github.com/wasmi-labs/wasmi/issues/2046)
+
+In Wasmi 2.0.0 (all compilation modes; 1.1.0 is correct), a `select` whose condition compares a value with zero
+ignores the condition. With `x != 0` (`i32.ne` against a constant zero, in either operand order, or `i32.eqz`
+twice) it always returns `val2`. With `x == 0` (`i32.eqz`, `i32.eq` against zero) it always returns `val1`. Other
+comparisons, and a plain value as the condition, work. This looks like the fusion of a zero test into `select`
+dropping the condition. Found by the `intalg` generator against its independent Python model, then swept by
+`cmpfuse`: 868 of 1500 programs were flagged, and every divergence traced from a sample of them (581 exports)
+came down to this `select` shape. `br_if` / `if` fusions were clean.
+
+## Endive (formerly Chicory, a JVM WebAssembly runtime)
+
+### Interpreter crashes in `RETURN_CALL` after a nested call that ended in `return_call` — [endive#212](https://github.com/bytecodealliance/endive/issues/212)
+
+A function that first makes a regular `call` to a function ending in `return_call`, and then does a `return_call`
+of its own, makes the interpreter throw `IndexOutOfBoundsException` from `StackFrame.popCtrlTillCall`. The
+JVM-bytecode compiler is correct. From reading the code, the likely cause is a finished tail-callee frame left on
+`callStack` (the caller's cleanup only pops its own frame), which the second `RETURN_CALL` then pops as the
+"current" frame. Found by `tailgen` through `tools/model_hunt.py`. The same code is in the older `dylibso/chicory`
+repository, whose development moved to Endive.
+
 ## wasmtime
 
 ### `call_ref` and caught exceptions drop callee fuel usage — [GHSA-m63x-6p34-q65x](https://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-m63x-6p34-q65x)
