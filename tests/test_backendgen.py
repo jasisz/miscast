@@ -119,6 +119,19 @@ def test_model_hunt_parse():
     eq("trap trace", model_hunt.parse("<wasm func #4> +511\n  !trap[MEMORY_OOB]"), None)
 
 
+def test_model_hunt_selfcheck_helpers():
+    """Self-checking generators' baked expectations become model values; i32 results compare as bit patterns."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import model_hunt
+    eq("baked int", model_hunt._baked("OK -3"), -3)
+    eq("baked trap", model_hunt._baked("TRAP"), "TRAP")
+    eq("baked unusable", model_hunt._baked("OK"), None)
+    eq("wamr i32", model_hunt.parse("0x14:i32"), 20)
+    eq("i32 printed unsigned", model_hunt._same(0xFFFFFFFF, -1), True)
+    eq("different values", model_hunt._same(5, 6), False)
+    eq("i64 not wrapped", model_hunt._same(1 << 40, 0), False)
+
+
 def test_wtref_isolated():
     """Each export runs in a fresh instance: a grow in one export is not seen by the next."""
     if not os.path.exists(WTDIFF):

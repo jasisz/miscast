@@ -3,7 +3,8 @@ independent model (e.g. intalg + watmodel), so no second engine is needed to cal
 
 usage: python3 tools/model_hunt.py GEN_MODULE:FUNC ORACLE_MODULE:FUNC START COUNT --engine NAME [--engine ...]
                                    [-j N] [--out DIR]
-GEN(seed) -> WAT; ORACLE(wat) -> {export: signed i64 | "TRAP"}. Engines are presets below; every run goes through the
+GEN(seed) -> WAT; ORACLE(wat) -> {export: signed i64 | "TRAP"}. With ORACLE `self`, GEN is a self-checking
+generator returning (label, export, expected, wat), e.g. miscast.gcalias:gcalias_gen. Engines are presets below; every run goes through the
 ~/wasm-engines/safehunt/caprun watchdog (wall clock + RSS cap), and WasmEdge through its capped `we` wrapper.
 """
 import argparse, concurrent.futures as cf, importlib, os, re, shutil, subprocess, sys, tempfile
@@ -14,6 +15,14 @@ ENG = os.environ.get("WASM_ENGINES", os.path.expanduser("~/wasm-engines"))
 CAP = [os.path.join(ENG, "safehunt", "caprun")]
 WE = os.path.join(ENG, "safehunt", "we")
 WASMEDGE = os.path.join(ENG, "wasmedge", "bin", "wasmedge")
+# freshest builds (see ~/wasm-engines/build): hunt on these so fixed bugs are not re-found
+WASMEDGE_MAIN = os.path.join(ENG, "build", "wasmedge-main", "build", "tools", "wasmedge", "wasmedge")
+WIZARD_MAIN_JAR = os.path.join(ENG, "build", "wizard-main", "bin", "wizeng.jvm.jar")
+_WE_CAPS = ["--memory-page-limit", "2048", "--time-limit", "10000"]
+
+
+def _wizard_main(w, e):
+    return CAP + ["/opt/homebrew/opt/openjdk/bin/java", "-jar", WIZARD_MAIN_JAR, f"--invoke={e}", "--print-result", w]
 
 
 def _iwasm(build):
@@ -29,15 +38,23 @@ ENGINES = {
                       lambda w, e: [WE, "--reactor", w, e]),
     # iwasm otherwise appends its own app heap to linear memory: memory.size grows by it and a program that
     # writes its whole memory corrupts WAMR's heap ("heap migrate failed") -- not a wasm-level bug
-    "wamr-classic": (None, lambda w, e: CAP + [_iwasm("classic"), "--heap-size=0", "-f", e, w]),
-    "wamr-fast": (None, lambda w, e: CAP + [_iwasm("fast"), "--heap-size=0", "-f", e, w]),
+    # GC heaps big enough that allocation-heavy GC programs are not cut short by WAMR's small default
+    # (the classic build's fixed global pool cannot back more than ~8 MiB)
+    "wamr-classic": (None, lambda w, e: CAP + [_iwasm("classic"), "--heap-size=0", "--gc-heap-size=8388608",
+                                               "-f", e, w]),
+    "wamr-fast": (None, lambda w, e: CAP + [_iwasm("fast"), "--heap-size=0", "--gc-heap-size=67108864",
+                                            "-f", e, w]),
     "wizard": (None, lambda w, e: CAP + [os.path.join(ENG, "wizard", "wizeng"), f"--invoke={e}", "--print-result", w]),
+    "wasmedge-main": (None, lambda w, e: CAP + [WASMEDGE_MAIN, "run"] + _WE_CAPS + ["--reactor", w, e]),
+    "wasmedge-main-aot": (lambda w, o: CAP + [WASMEDGE_MAIN, "compile", "--optimize", "3", w, o],
+                          lambda w, e: CAP + [WASMEDGE_MAIN, "run"] + _WE_CAPS + ["--reactor", w, e]),
+    "wizard-main": (None, _wizard_main),
 }
 # the engine lacks a feature the module uses: not a finding (a spec-invalid rejection is still reported)
 _UNSUP = re.compile(r"load failed|not supported|unsupported|not enabled|not implemented|unimplemented", re.I)
 # a result is a whole line: `-123`, `0xff..:i64` (WAMR) or `123uL` (Wizard). Anything else (e.g. Wizard's
 # trap trace `<wasm func #4> +511`) is not a result.
-_NUM = re.compile(r"^(0x[0-9a-fA-F]+)(?::i64)?$|^(-?\d+)(?:uL|L)?$")
+_NUM = re.compile(r"^(0x[0-9a-fA-F]+)(?::i(?:32|64))?$|^(-?\d+)(?:uL|L)?$")
 
 
 def _signed(v):
@@ -68,12 +85,33 @@ def parse(out):
     return None
 
 
+def _same(got, exp):
+    """Equal, or equal as i32 bit patterns (an i32 result may print signed or unsigned depending on the engine)."""
+    if got == exp:
+        return True
+    return got is not None and abs(got) < (1 << 32) and abs(exp) < (1 << 32) and (got - exp) % (1 << 32) == 0
+
+
+def _baked(expected):
+    """A self-checking generator's expectation ("OK <int>" / "TRAP") as a model value, or None if unusable."""
+    if expected.startswith("TRAP"):
+        return "TRAP"
+    parts = expected.split()
+    return int(parts[1]) if len(parts) == 2 and parts[0] == "OK" and re.fullmatch(r"-?\d+", parts[1]) else None
+
+
 def one(a, gen, oracle, seed, tmp):
-    wat = gen(seed)
+    res = gen(seed)
+    if oracle is None:  # self-checking generator
+        _label, export, expected, wat = res
+        want = {export: _baked(expected)} if _baked(expected) is not None else {}
+    else:
+        wat = res
     base = os.path.join(tmp, f"s{seed}")
     open(base + ".wat", "w").write(wat)
     subprocess.run(["wasm-tools", "parse", base + ".wat", "-o", base + ".wasm"], check=True)
-    want = oracle(wat)
+    if oracle is not None:
+        want = oracle(wat)
     bad, unsup = [], []
     for name in a.engine:
         compile_step, run = ENGINES[name]
@@ -97,13 +135,13 @@ def one(a, gen, oracle, seed, tmp):
                 continue
             got = None if "!trap" in p.stdout + p.stderr else parse(p.stdout)
             # Wizard exits with the invoked function's result as its status (the low byte of it)
-            rc_ok = p.returncode == 0 or (name == "wizard" and got is not None and p.returncode == got & 0xFF)
+            rc_ok = p.returncode == 0 or (name.startswith("wizard") and got is not None and p.returncode == got & 0xFF)
             got = got if rc_ok else None
             if exp == "TRAP":  # the reference trapped: the engine must fail too (a capped run is not a trap)
                 if rc_ok or "CAPPED" in p.stderr + p.stdout:
                     bad.append((name, export, got if rc_ok else f"rc={p.returncode} (capped)", exp))
                 continue
-            if got != exp:
+            if not _same(got, exp):
                 detail = got if got is not None else f"rc={p.returncode} {(p.stderr + p.stdout).strip()[-200:]}"
                 bad.append((name, export, detail, exp))
     for f in os.listdir(tmp):
@@ -128,7 +166,7 @@ def main():
     ap.add_argument("--tag", default="")
     a = ap.parse_args()
     load = lambda spec: getattr(importlib.import_module(spec.split(":")[0]), spec.split(":")[1])
-    gen, oracle = load(a.gen), load(a.oracle)
+    gen, oracle = load(a.gen), (None if a.oracle == "self" else load(a.oracle))
     a.tag = a.tag or a.gen.split(":")[0].split(".")[-1]
     tmp = tempfile.mkdtemp(prefix="mh")
     nbad = 0
