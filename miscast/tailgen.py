@@ -29,21 +29,25 @@ def _mix_param(t, i):
     return f"(global.set $h (i64.add (i64.mul (global.get $h) (i64.const 0x100000001b3)) {v}))"
 
 
-def _val(t, salt):
-    """A value of type t derived from the running hash (no float arithmetic)."""
+def _val(t, salt, quiet_f32=False):
+    """A value of type t derived from the running hash (no float arithmetic). `quiet_f32` sets the f32 quiet bit,
+    so no f32 value is a signaling NaN (for engines that quiet f32 sNaNs on every move, e.g. wasm3)."""
     h = f"(i64.xor (global.get $h) (i64.const {salt}))"
     if t == "i32":
         return f"(i32.wrap_i64 (i64.rotr {h} (i64.const {salt % 64})))"
     if t == "i64":
         return f"(i64.rotl {h} (i64.const {salt % 64}))"
     if t == "f32":
-        return f"(f32.reinterpret_i32 (i32.wrap_i64 {h}))"
+        bits = f"(i32.wrap_i64 {h})"
+        if quiet_f32:
+            bits = f"(i32.or {bits} (i32.const 0x400000))"
+        return f"(f32.reinterpret_i32 {bits})"
     if t == "f64":
         return f"(f64.reinterpret_i64 {h})"
     return f"(i64x2.replace_lane 1 (i64x2.splat {h}) (i64.rotl {h} (i64.const 29)))"
 
 
-def gen_module(seed, n_funcs=None, exn=True, single_result=False, simd=True):
+def gen_module(seed, n_funcs=None, exn=True, single_result=False, simd=True, quiet_f32=False):
     """`exn=False` drops exception handling and `single_result=True` makes each export return one i64 (the hash
     mixed with the remaining fuel), for engines without EH or harnesses that compare a single value. The random
     stream is consumed identically, so the default modules are unchanged."""
@@ -75,14 +79,14 @@ def gen_module(seed, n_funcs=None, exn=True, single_result=False, simd=True):
         lines.append("  (tag $e (param i64 i32))")
 
     def args_for(ti, salt0):
-        return " ".join(_val(t, salt0 * 131 + j * 7 + 1) for j, t in enumerate(funcs[ti][0]))
+        return " ".join(_val(t, salt0 * 131 + j * 7 + 1, quiet_f32) for j, t in enumerate(funcs[ti][0]))
 
     for fi, (params, rc) in enumerate(funcs):
         res = res_classes[rc]
         body = [_mix_param(t, i) for i, t in enumerate(params)]
         body.append(f"(global.set $h (i64.add (global.get $h) (i64.const {fi * 1000 + 7})))")
         # base case
-        ret_vals = " ".join(_val(t, fi * 97 + j) for j, t in enumerate(res))
+        ret_vals = " ".join(_val(t, fi * 97 + j, quiet_f32) for j, t in enumerate(res))
         body.append(f"(if (i32.eqz (global.get $fuel)) (then (return {ret_vals})))")
         body.append("(global.set $fuel (i32.sub (global.get $fuel) (i32.const 1)))")
         # optional interior non-tail call into another class, fold its results
@@ -152,3 +156,8 @@ def gen_module_i64(seed):
 def gen_module_portable(seed):
     """Like gen_module_i64 but without v128 values, for engines built without SIMD (e.g. WAMR, wasmer singlepass)."""
     return gen_module(seed, exn=False, single_result=True, simd=False)
+
+
+def gen_module_portable_qnan(seed):
+    """gen_module_portable with every generated f32 forced to a non-signaling bit pattern."""
+    return gen_module(seed, exn=False, single_result=True, simd=False, quiet_f32=True)

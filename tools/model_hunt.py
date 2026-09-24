@@ -19,6 +19,7 @@ WASMEDGE = os.path.join(ENG, "wasmedge", "bin", "wasmedge")
 WASMEDGE_MAIN = os.path.join(ENG, "build", "wasmedge-main", "build", "tools", "wasmedge", "wasmedge")
 WIZARD_MAIN_JAR = os.path.join(ENG, "build", "wizard-main", "bin", "wizeng.jvm.jar")
 _WE_CAPS = ["--memory-page-limit", "2048", "--time-limit", "10000"]
+WASM3_MAIN = os.path.join(ENG, "build", "wasm3-main", "build", "wasm3")
 WASMER_MAIN = os.path.join(ENG, "build", "wasmer-main", "target", "release", "wasmer")
 # no --enable-* flags: asking a backend for a feature it lacks makes wasmer refuse every module
 _WASMER_FEAT = []
@@ -65,6 +66,8 @@ ENGINES = {
     "wizard-main": (None, _wizard_main),
     "wasmer-sp": (None, lambda w, e: CAP + [WASMER_MAIN, "run", "--singlepass"] + _WASMER_FEAT + ["--invoke", e, w]),
     "wasmer-cl": (None, lambda w, e: CAP + [WASMER_MAIN, "run", "--cranelift"] + _WASMER_FEAT + ["--invoke", e, w]),
+    "wasm3": (None, lambda w, e: CAP + [WASM3_MAIN, "--stack-size", "8388608", "--func", e, w]),
+    "wasm3-eager": (None, lambda w, e: CAP + [WASM3_MAIN, "--compile", "--stack-size", "8388608", "--func", e, w]),
     "wasmi": (None, lambda w, e: CAP + [os.path.join(ENG, "wasmi", "bin", "wasmi"), "--compilation-mode", "eager",
                                         "--invoke", e, w]),
     "wasmi-lazy": (None, lambda w, e: CAP + [os.path.join(ENG, "wasmi", "bin", "wasmi"), "--compilation-mode", "lazy",
@@ -105,7 +108,8 @@ def _run(argv, timeout, path):
 
 def parse(out):
     for line in reversed(out.strip().splitlines()):
-        m = _NUM.search(line.strip())
+        line = line.strip().removeprefix("Result:").strip()  # wasm3 prints `Result: <value>`
+        m = _NUM.search(line)
         if m:
             return _signed(int(m.group(1), 16) if m.group(1) else int(m.group(2)))
     return None
@@ -162,7 +166,8 @@ def one(a, gen, oracle, seed, tmp):
             if p.returncode and _UNSUP.search(p.stderr + p.stdout):
                 unsup.append(name)
                 continue
-            got = None if "!trap" in p.stdout + p.stderr else parse(p.stdout)
+            # (some engines, e.g. wasm3, print the result on stderr)
+            got = None if "!trap" in p.stdout + p.stderr else (parse(p.stdout) if p.stdout.strip() else parse(p.stderr))
             # Wizard exits with the invoked function's result as its status (the low byte of it)
             rc_ok = p.returncode == 0 or (name.startswith("wizard") and got is not None and p.returncode == got & 0xFF)
             got = got if rc_ok else None
