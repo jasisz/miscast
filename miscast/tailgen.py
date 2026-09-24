@@ -43,20 +43,24 @@ def _val(t, salt):
     return f"(i64x2.replace_lane 1 (i64x2.splat {h}) (i64.rotl {h} (i64.const 29)))"
 
 
-def gen_module(seed, n_funcs=None):
+def gen_module(seed, n_funcs=None, exn=True, single_result=False, simd=True):
+    """`exn=False` drops exception handling and `single_result=True` makes each export return one i64 (the hash
+    mixed with the remaining fuel), for engines without EH or harnesses that compare a single value. The random
+    stream is consumed identically, so the default modules are unchanged."""
     r = random.Random(seed)
+    vt = VT if simd else [t for t in VT if t != "v128"]  # (a different stream only when simd=False)
     n_res_classes = r.randrange(1, 4)
     res_classes = []
     for _ in range(n_res_classes):
         k = r.choice([0, 1, 1, 2, 3, 5, 6])
-        res_classes.append([r.choice(VT) for _ in range(k)])
+        res_classes.append([r.choice(vt) for _ in range(k)])
     n_funcs = n_funcs or r.randrange(4, 12)
     funcs = []  # (params, rc)
     for _ in range(n_funcs):
         np = r.choice([0, 1, 2, 3, 5, 8, 9, 12, 16, 20, 24])
-        params = [r.choice(VT) for _ in range(np)]
+        params = [r.choice(vt) for _ in range(np)]
         funcs.append((params, r.randrange(n_res_classes)))
-    use_exn = r.random() < 0.4
+    use_exn = r.random() < 0.4 and exn
     types = []
     for fi, (params, rc) in enumerate(funcs):
         p = " ".join(params)
@@ -109,7 +113,7 @@ def gen_module(seed, n_funcs=None):
             body.append(f"(return_call_indirect $tab (type $t{tj}) {args_for(tj, fi)} (i32.const {tj}))")
         else:
             body.append(f"(call $f{tj} {args_for(tj, fi)})")
-        locs = " ".join(f"(local $tmp{t} {t})" for t in VT)
+        locs = " ".join(f"(local $tmp{t} {t})" for t in vt)
         lines.append(f"  (func $f{fi} (type $t{fi}) {locs}\n    " + "\n    ".join(body) + ")")
     # entry points
     for ei in range(min(n_funcs, 6)):
@@ -126,11 +130,25 @@ def gen_module(seed, n_funcs=None):
             inner = " ".join(wrapped)
             wrapped = [f"(block $c (result i64 i32) (try_table (catch $e $c) {inner}) (i64.const 0) (i32.const 0))",
                        "(global.set $fuel)", "(global.set $h (i64.xor (global.get $h)))"]
-        locs = " ".join(f"(local $tmp{t} {t})" for t in VT)
-        lines.append(f"  (func (export \"e{ei}\") (result i64 i32) {locs}\n    " + "\n    ".join(wrapped)
-                     + "\n    (global.get $h) (global.get $fuel))")
+        locs = " ".join(f"(local $tmp{t} {t})" for t in vt)
+        if single_result:
+            lines.append(f"  (func (export \"e{ei}\") (result i64) {locs}\n    " + "\n    ".join(wrapped)
+                         + "\n    (i64.xor (global.get $h) (i64.extend_i32_u (global.get $fuel))))")
+        else:
+            lines.append(f"  (func (export \"e{ei}\") (result i64 i32) {locs}\n    " + "\n    ".join(wrapped)
+                         + "\n    (global.get $h) (global.get $fuel))")
     return "\n".join(lines) + ")\n"
 
 
 def _mix_param_local(t, name):
     return _mix_param(t, name)
+
+
+def gen_module_i64(seed):
+    """No exceptions, one i64 result per export: runs on engines without EH, checkable by a single-value oracle."""
+    return gen_module(seed, exn=False, single_result=True)
+
+
+def gen_module_portable(seed):
+    """Like gen_module_i64 but without v128 values, for engines built without SIMD (e.g. WAMR, wasmer singlepass)."""
+    return gen_module(seed, exn=False, single_result=True, simd=False)

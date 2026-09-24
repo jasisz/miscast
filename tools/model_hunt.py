@@ -25,7 +25,7 @@ _WASMER_FEAT = []
 
 
 WAMRC = os.path.join(ROOT, "work", "wamrc-build", "wamrc")
-_WAMR_GC = ["--heap-size=0", "--gc-heap-size=67108864"]
+_WAMR_GC = ["--heap-size=0", "--gc-heap-size=67108864", "--stack-size=8388608"]
 
 
 def _wamrc(opt):
@@ -50,10 +50,13 @@ ENGINES = {
     # iwasm otherwise appends its own app heap to linear memory: memory.size grows by it and a program that
     # writes its whole memory corrupts WAMR's heap ("heap migrate failed") -- not a wasm-level bug
     # GC heaps big enough that allocation-heavy GC programs are not cut short by WAMR's small default
-    # (the classic build's fixed global pool cannot back more than ~8 MiB)
-    "wamr-classic": (None, lambda w, e: CAP + [_iwasm("classic"), "--heap-size=0", "--gc-heap-size=8388608",
+    # and an 8 MiB wasm stack (iwasm defaults to 64 KiB, which deep but valid call chains exhaust)
+    # (the classic build's fixed global pool must also back the stack: 4 MiB GC heap + 2 MiB stack fit)
+    "wamr-classic": (None, lambda w, e: CAP + [_iwasm("classic"), "--heap-size=0", "--gc-heap-size=4194304",
+                                               "--stack-size=2097152",
                                                "-f", e, w]),
     "wamr-fast": (None, lambda w, e: CAP + [_iwasm("fast"), "--heap-size=0", "--gc-heap-size=67108864",
+                                            "--stack-size=8388608",
                                             "-f", e, w]),
     "wizard": (None, lambda w, e: CAP + [os.path.join(ENG, "wizard", "wizeng"), f"--invoke={e}", "--print-result", w]),
     "wasmedge-main": (None, lambda w, e: CAP + [WASMEDGE_MAIN, "run"] + _WE_CAPS + ["--reactor", w, e]),
